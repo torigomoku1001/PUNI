@@ -37,7 +37,8 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   late final PuniPhysics _physics;
   late final CreatureState _state;
   late final AudioController _audioController;
@@ -97,38 +98,45 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _gameLoopController.repeat();
 
     // 1. Pedometer & Tilt Gravity (Pure-Dart Accelerometer)
-    _accelerometerSub = accelerometerEventStream().listen((AccelerometerEvent event) {
-      // Step counter peak detection
-      double magnitude = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
-      if (magnitude > 12.2 && _prevMagnitude <= 12.2) {
-        DateTime now = DateTime.now();
-        if (now.difference(_lastStepTime).inMilliseconds > 360) {
-          _state.addSteps(1);
-          _lastStepTime = now;
-          
-          // Downward squash impulse upon stepping
-          for (int i = 0; i < PuniPhysics.nodeCount; i++) {
-            double angle = i * 2 * pi / PuniPhysics.nodeCount;
-            _physics.nodeVelocities[i] += Offset(cos(angle) * 35.0, sin(angle) * 75.0 + 35.0);
+    _accelerometerSub = accelerometerEventStream().listen(
+      (AccelerometerEvent event) {
+        // Step counter peak detection
+        double magnitude = sqrt(
+          event.x * event.x + event.y * event.y + event.z * event.z,
+        );
+        if (magnitude > 12.2 && _prevMagnitude <= 12.2) {
+          DateTime now = DateTime.now();
+          if (now.difference(_lastStepTime).inMilliseconds > 360) {
+            _state.addSteps(1);
+            _lastStepTime = now;
+
+            // Downward squash impulse upon stepping
+            for (int i = 0; i < PuniPhysics.nodeCount; i++) {
+              double angle = i * 2 * pi / PuniPhysics.nodeCount;
+              _physics.nodeVelocities[i] += Offset(
+                cos(angle) * 35.0,
+                sin(angle) * 75.0 + 35.0,
+              );
+            }
           }
         }
-      }
-      _prevMagnitude = magnitude;
+        _prevMagnitude = magnitude;
 
-      // Tilt gravity computation
-      double targetGx = -event.x * 65.0;
-      double targetGy = event.y * 65.0;
-      if (targetGx.isNaN || targetGy.isNaN) {
-        targetGx = 0;
-        targetGy = 480;
-      }
+        // Tilt gravity computation
+        double targetGx = -event.x * 65.0;
+        // Y（落下速度）は常に立てた時の固定値に保つ
+        const double targetGy = 480.0;
+        if (targetGx.isNaN) {
+          targetGx = 0;
+        }
 
-      setState(() {
+        // Avoid extra rebuilds from sensor stream; the game loop already repaints.
         _gravity = Offset.lerp(_gravity, Offset(targetGx, targetGy), 0.12)!;
-      });
-    }, onError: (e) {
-      _gravity = const Offset(0, 480);
-    });
+      },
+      onError: (e) {
+        _gravity = const Offset(0, 480);
+      },
+    );
 
     // 2. Battery monitor for charging shiver & sparks (ブルブル・ビリビリ)
     _batterySub = _battery.onBatteryStateChanged.listen((BatteryState state) {
@@ -194,18 +202,27 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     if (speed > 220.0 && !_state.isDragging) {
       double leftBoundary = 20.0 + PuniPhysics.baseRadius;
       double rightBoundary = boundarySize.width - 20.0 - PuniPhysics.baseRadius;
-      double bottomBoundary = boundarySize.height - 20.0 - PuniPhysics.baseRadius - 190.0;
-      
-      bool hitWall = (_physics.center.dx <= leftBoundary + 8.0) || (_physics.center.dx >= rightBoundary - 8.0);
+      double bottomBoundary =
+          boundarySize.height - 20.0 - PuniPhysics.baseRadius - 190.0;
+
+      bool hitWall =
+          (_physics.center.dx <= leftBoundary + 8.0) ||
+          (_physics.center.dx >= rightBoundary - 8.0);
       bool hitFloor = (_physics.center.dy >= bottomBoundary - 8.0);
-      
+
       if (hitWall || hitFloor) {
         if (_wasFlungByUser) {
           // Thrown by user: painful look!
-          _state.triggerMood('sad', duration: const Duration(milliseconds: 1500));
+          _state.triggerMood(
+            'sad',
+            duration: const Duration(milliseconds: 1500),
+          );
         } else {
           // Autonomous jump/hop: happy / excited look!
-          _state.triggerMood('happy', duration: const Duration(milliseconds: 1000));
+          _state.triggerMood(
+            'happy',
+            duration: const Duration(milliseconds: 1000),
+          );
         }
         _audioController.playBoyo(_state.softness); // Extra bounce feedback
         _wasFlungByUser = false; // Reset fling status after bounce impact
@@ -213,7 +230,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
 
     // Update food particles
-    final bottomLimit = boundarySize.height - 210.0; // Keep food above action panel & banner ad
+    final bottomLimit =
+        boundarySize.height - 210.0; // Keep food above action panel & banner ad
     final toRemove = <FoodBubble>[];
     for (var bubble in _foodBubbles) {
       bubble.update(dt, _gravity, bottomLimit);
@@ -239,7 +257,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     // Push boundary nodes outward wobbly
     for (int i = 0; i < PuniPhysics.nodeCount; i++) {
       double angle = i * 2 * pi / PuniPhysics.nodeCount;
-      _physics.nodeVelocities[i] += Offset(cos(angle) * 300.0, sin(angle) * 300.0);
+      _physics.nodeVelocities[i] += Offset(
+        cos(angle) * 300.0,
+        sin(angle) * 300.0,
+      );
     }
   }
 
@@ -262,14 +283,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final localPosition = renderBox.globalToLocal(event.position);
 
     final dist = (localPosition - _physics.center).distance;
-    
+
     // Tap response within base radius multiplier
     if (dist < PuniPhysics.baseRadius * 1.8) {
       if (_interactionMode == 'drag') {
-        _state.setInteraction(isDragging: true, isPetting: false, touchPosition: localPosition);
+        _state.setInteraction(
+          isDragging: true,
+          isPetting: false,
+          touchPosition: localPosition,
+        );
         _audioController.playPuni(_state.softness);
       } else {
-        _state.setInteraction(isDragging: false, isPetting: true, touchPosition: localPosition);
+        _state.setInteraction(
+          isDragging: false,
+          isPetting: true,
+          touchPosition: localPosition,
+        );
         if (_state.energy <= 0.0) {
           _state.triggerMood('angry', duration: const Duration(seconds: 2));
         } else {
@@ -319,17 +348,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         }
       }
     }
-    _state.setInteraction(isDragging: false, isPetting: false, touchPosition: null);
+    _state.setInteraction(
+      isDragging: false,
+      isPetting: false,
+      touchPosition: null,
+    );
   }
 
   void _spawnFood() {
     final mediaSize = MediaQuery.of(context).size;
     final randomX = 40.0 + Random().nextDouble() * (mediaSize.width - 80.0);
     setState(() {
-      _foodBubbles.add(FoodBubble(
-        position: Offset(randomX, 30.0),
-        velocity: const Offset(0, 60.0),
-      ));
+      _foodBubbles.add(
+        FoodBubble(
+          position: Offset(randomX, 30.0),
+          velocity: const Offset(0, 60.0),
+        ),
+      );
     });
   }
 
@@ -358,7 +393,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   void _showAppleHealthSyncDialog() {
-    DateTime bedtime = DateTime.now().subtract(const Duration(hours: 8)); // Default 8 hours bedtime
+    DateTime bedtime = DateTime.now().subtract(
+      const Duration(hours: 8),
+    ); // Default 8 hours bedtime
     DateTime wakeTime = DateTime.now();
     double sleepHours = 8.0;
 
@@ -397,7 +434,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(CupertinoIcons.heart_fill, color: Color(0xFFFF2D55), size: 22),
+                        const Icon(
+                          CupertinoIcons.heart_fill,
+                          color: Color(0xFFFF2D55),
+                          size: 22,
+                        ),
                         const SizedBox(width: 6),
                         Text(
                           "Apple Health 同期",
@@ -415,7 +456,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       margin: const EdgeInsets.symmetric(horizontal: 20),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: CupertinoColors.secondarySystemBackground.resolveFrom(context),
+                        color: CupertinoColors.secondarySystemBackground
+                            .resolveFrom(context),
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: Row(
@@ -429,7 +471,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 style: GoogleFonts.notoSansJp(
                                   fontSize: 14,
                                   fontWeight: FontWeight.bold,
-                                  color: CupertinoColors.label.resolveFrom(context),
+                                  color: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -437,7 +481,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 "ヘルスケア歩数: ${_state.stepsToday} 歩",
                                 style: GoogleFonts.notoSansJp(
                                   fontSize: 12,
-                                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
                                 ),
                               ),
                             ],
@@ -474,7 +519,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               "就寝時刻",
                               style: GoogleFonts.notoSansJp(
                                 fontSize: 11,
-                                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
                               ),
                             ),
                             SizedBox(
@@ -499,7 +545,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               "起床時刻",
                               style: GoogleFonts.notoSansJp(
                                 fontSize: 11,
-                                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
                               ),
                             ),
                             SizedBox(
@@ -532,14 +579,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     const Spacer(),
                     // Action button
                     Padding(
-                      padding: const EdgeInsets.only(left: 20, right: 20, bottom: 20),
+                      padding: const EdgeInsets.only(
+                        left: 20,
+                        right: 20,
+                        bottom: 20,
+                      ),
                       child: CupertinoButton(
                         color: const Color(0xFFFF2D55),
                         borderRadius: BorderRadius.circular(16),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(CupertinoIcons.heart_fill, color: Colors.white),
+                            const Icon(
+                              CupertinoIcons.heart_fill,
+                              color: Colors.white,
+                            ),
                             const SizedBox(width: 8),
                             Text(
                               "Apple Health 睡眠データを同期",
@@ -554,28 +608,39 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           showCupertinoDialog(
                             context: context,
                             builder: (loaderCtx) {
-                              Future.delayed(const Duration(milliseconds: 1400), () {
-                                if (!mounted) return;
-                                Navigator.pop(loaderCtx); // Dismiss loader
-                                Navigator.pop(context);   // Dismiss sheet
-                                
-                                // Award sleep energy to state
-                                _state.addSleepEnergy(sleepHours);
-                                _audioController.playChime();
-                                _state.triggerMood('happy', duration: const Duration(seconds: 3));
-                                
-                                ScaffoldMessenger.of(this.context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      "睡眠データを同期しました！エネルギー +${(sleepHours * 10.0).toStringAsFixed(0)} ⚡️",
-                                      style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+                              Future.delayed(
+                                const Duration(milliseconds: 1400),
+                                () {
+                                  if (!mounted) return;
+                                  Navigator.pop(loaderCtx); // Dismiss loader
+                                  Navigator.pop(context); // Dismiss sheet
+
+                                  // Award sleep energy to state
+                                  _state.addSleepEnergy(sleepHours);
+                                  _audioController.playChime();
+                                  _state.triggerMood(
+                                    'happy',
+                                    duration: const Duration(seconds: 3),
+                                  );
+
+                                  ScaffoldMessenger.of(
+                                    this.context,
+                                  ).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        "睡眠データを同期しました！エネルギー +${(sleepHours * 10.0).toStringAsFixed(0)} ⚡️",
+                                        style: GoogleFonts.notoSansJp(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      backgroundColor:
+                                          CupertinoColors.activeGreen,
+                                      behavior: SnackBarBehavior.floating,
                                     ),
-                                    backgroundColor: CupertinoColors.activeGreen,
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
-                              });
-                              
+                                  );
+                                },
+                              );
+
                               return const CupertinoAlertDialog(
                                 title: Text("ヘルスケア同期"),
                                 content: Padding(
@@ -654,9 +719,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           // 1. Dynamic Background
           AnimatedContainer(
             duration: const Duration(seconds: 2),
-            decoration: BoxDecoration(
-              gradient: _getBackgroundGradient(),
-            ),
+            decoration: BoxDecoration(gradient: _getBackgroundGradient()),
           ),
 
           // 2. Main Painter Area
@@ -678,6 +741,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   isBlinking: _isBlinking,
                   isRainbow: _state.isRainbow,
                   isCharging: _isCharging,
+                  isPetting: _state.isPetting,
                 ),
                 child: Container(),
               ),
@@ -729,7 +793,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         : Colors.white.withOpacity(0.25),
                   ),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 16,
+                ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -817,7 +884,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       children: [
                         Row(
                           children: [
-                            const Icon(Icons.bolt, color: Colors.amber, size: 16),
+                            const Icon(
+                              Icons.bolt,
+                              color: Colors.amber,
+                              size: 16,
+                            ),
                             const SizedBox(width: 4),
                             Text(
                               "ぷにエネルギー: ${_state.energy.toStringAsFixed(1)} / 100",
@@ -832,7 +903,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         GestureDetector(
                           onTap: _showAppleHealthSyncDialog,
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
                             decoration: BoxDecoration(
                               color: const Color(0xFFFF2D55).withOpacity(0.15),
                               borderRadius: BorderRadius.circular(12),
@@ -844,7 +918,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(CupertinoIcons.heart_fill, color: Color(0xFFFF2D55), size: 12),
+                                const Icon(
+                                  CupertinoIcons.heart_fill,
+                                  color: Color(0xFFFF2D55),
+                                  size: 12,
+                                ),
                                 const SizedBox(width: 4),
                                 Text(
                                   "ヘルスケア同期",
@@ -874,12 +952,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           ),
                           AnimatedFractionallySizedBox(
                             duration: const Duration(milliseconds: 250),
-                            widthFactor: (_state.energy / 100.0).clamp(0.0, 1.0),
+                            widthFactor: (_state.energy / 100.0).clamp(
+                              0.0,
+                              1.0,
+                            ),
                             child: Container(
                               height: 6,
                               decoration: const BoxDecoration(
                                 gradient: LinearGradient(
-                                  colors: [Color(0xFF34C759), Color(0xFF4CD964)],
+                                  colors: [
+                                    Color(0xFF34C759),
+                                    Color(0xFF4CD964),
+                                  ],
                                 ),
                               ),
                             ),
@@ -908,20 +992,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 onTap: () => _state.debugSetLevel(lv),
                                 borderRadius: BorderRadius.circular(12),
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
                                   decoration: BoxDecoration(
                                     color: isCurrent
                                         ? _primaryColor
                                         : (textThemeColor == Colors.white
-                                            ? Colors.white.withOpacity(0.1)
-                                            : Colors.black.withOpacity(0.05)),
+                                              ? Colors.white.withOpacity(0.1)
+                                              : Colors.black.withOpacity(0.05)),
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
                                       color: isCurrent
                                           ? Colors.transparent
                                           : (textThemeColor == Colors.white
-                                              ? Colors.white.withOpacity(0.1)
-                                              : Colors.black.withOpacity(0.1)),
+                                                ? Colors.white.withOpacity(0.1)
+                                                : Colors.black.withOpacity(
+                                                    0.1,
+                                                  )),
                                       width: 1,
                                     ),
                                   ),
@@ -948,8 +1037,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
 
-
-
           // 6. Bottom Panels (Actions + Banner Ad)
           Positioned(
             bottom: media.padding.bottom + 12,
@@ -972,18 +1059,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             : Colors.white.withOpacity(0.25),
                       ),
                     ),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
                         _buildActionButton(
-                          icon: _interactionMode == 'drag' ? Icons.touch_app : Icons.front_hand,
+                          icon: _interactionMode == 'drag'
+                              ? Icons.touch_app
+                              : Icons.front_hand,
                           label: _interactionMode == 'drag' ? "触る" : "撫でる",
                           isActive: _interactionMode == 'pet',
                           textThemeColor: textThemeColor,
                           onPressed: () {
                             setState(() {
-                              _interactionMode = _interactionMode == 'drag' ? 'pet' : 'drag';
+                              _interactionMode = _interactionMode == 'drag'
+                                  ? 'pet'
+                                  : 'drag';
                             });
                           },
                         ),
@@ -1026,7 +1120,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
                         color: Colors.grey[950],
-                        border: Border.all(color: Colors.white.withOpacity(0.15)),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.15),
+                        ),
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -1062,9 +1158,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             decoration: BoxDecoration(
                               color: const Color(0xFFFF2A6D).withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: const Color(0xFFFF2A6D).withOpacity(0.3)),
+                              border: Border.all(
+                                color: const Color(0xFFFF2A6D).withOpacity(0.3),
+                              ),
                             ),
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 12,
+                            ),
                             child: Text(
                               "Close video in: $_adCountdown",
                               style: GoogleFonts.outfit(
@@ -1192,7 +1293,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
               child: Text(
                 "入手",
-                style: GoogleFonts.notoSansJp(fontSize: 10, fontWeight: FontWeight.bold),
+                style: GoogleFonts.notoSansJp(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ],

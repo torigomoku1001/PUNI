@@ -5,8 +5,24 @@ import 'package:flutter/foundation.dart';
 class AudioController {
   // Pool of AudioPlayers to allow overlapping sounds
   static const int _poolSize = 4;
-  final List<AudioPlayer> _players = List.generate(_poolSize, (_) => AudioPlayer());
+  final List<AudioPlayer> _players = List.generate(
+    _poolSize,
+    (_) => AudioPlayer(),
+  );
   int _currentPlayerIndex = 0;
+
+  // Debounce intervals to avoid excessive audio focus churn and log spam.
+  static const int _puniMinIntervalMs = 80;
+  static const int _muniMinIntervalMs = 100;
+  static const int _boyoMinIntervalMs = 150;
+  static const int _chimeMinIntervalMs = 250;
+  static const int _levelUpMinIntervalMs = 400;
+
+  int _lastPuniMs = 0;
+  int _lastMuniMs = 0;
+  int _lastBoyoMs = 0;
+  int _lastChimeMs = 0;
+  int _lastLevelUpMs = 0;
 
   AudioController() {
     // Warm up players
@@ -21,12 +37,20 @@ class AudioController {
     return player;
   }
 
+  bool _canPlay(int lastMs, int minIntervalMs) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return now - lastMs >= minIntervalMs;
+  }
+
   /// Synthesizes and plays a "puni" (squishy squeeze) sound.
   /// Lower softness = higher, tighter pitch. Higher softness = lower, wetter pitch.
   void playPuni(double softness) {
+    if (!_canPlay(_lastPuniMs, _puniMinIntervalMs)) return;
+    _lastPuniMs = DateTime.now().millisecondsSinceEpoch;
+
     // Softness goes 0 -> 100
     double pct = (softness / 100.0).clamp(0.0, 1.0);
-    
+
     double startFreq = lerp(480.0, 180.0, pct);
     double endFreq = lerp(320.0, 120.0, pct);
     double duration = lerp(0.12, 0.28, pct);
@@ -44,8 +68,11 @@ class AudioController {
 
   /// Synthesizes and plays a "muni" (stretch/pull) sound.
   void playMuni(double softness) {
+    if (!_canPlay(_lastMuniMs, _muniMinIntervalMs)) return;
+    _lastMuniMs = DateTime.now().millisecondsSinceEpoch;
+
     double pct = (softness / 100.0).clamp(0.0, 1.0);
-    
+
     double startFreq = lerp(350.0, 150.0, pct);
     double endFreq = lerp(450.0, 220.0, pct); // Sweep upwards
     double duration = lerp(0.15, 0.35, pct);
@@ -63,8 +90,11 @@ class AudioController {
 
   /// Synthesizes and plays a "boyo" (wall bounce) sound.
   void playBoyo(double softness) {
+    if (!_canPlay(_lastBoyoMs, _boyoMinIntervalMs)) return;
+    _lastBoyoMs = DateTime.now().millisecondsSinceEpoch;
+
     double pct = (softness / 100.0).clamp(0.0, 1.0);
-    
+
     double startFreq = lerp(280.0, 110.0, pct);
     double endFreq = lerp(200.0, 90.0, pct);
     double duration = lerp(0.2, 0.5, pct);
@@ -82,6 +112,9 @@ class AudioController {
 
   /// Synthesizes and plays a happy chime on feeding or level up.
   void playChime() {
+    if (!_canPlay(_lastChimeMs, _chimeMinIntervalMs)) return;
+    _lastChimeMs = DateTime.now().millisecondsSinceEpoch;
+
     // Generate a simple dual-tone chime
     final wavBytes = _generateWav(
       frequencyStart: 523.25, // C5
@@ -94,6 +127,9 @@ class AudioController {
   }
 
   void playLevelUp() {
+    if (!_canPlay(_lastLevelUpMs, _levelUpMinIntervalMs)) return;
+    _lastLevelUpMs = DateTime.now().millisecondsSinceEpoch;
+
     // Sequence of rising tones
     final wavBytes = _generateWav(
       frequencyStart: 440.0, // A4
@@ -108,7 +144,6 @@ class AudioController {
   Future<void> _playBytes(Uint8List bytes) async {
     try {
       final player = _nextPlayer;
-      await player.stop();
       await player.play(BytesSource(bytes));
     } catch (e) {
       // Fail silently if audio is busy or not supported on this platform/simulator
@@ -151,7 +186,7 @@ class AudioController {
     bd.setUint8(12, 0x66); // f
     bd.setUint8(13, 0x6d); // m
     bd.setUint8(14, 0x74); // t
-    bd.setUint8(15, 0x20); //  
+    bd.setUint8(15, 0x20); //
     bd.setUint32(16, 16, Endian.little);
     bd.setUint16(20, 1, Endian.little); // PCM
     bd.setUint16(22, numChannels, Endian.little);
@@ -170,10 +205,10 @@ class AudioController {
     // Generate samples
     for (int t = 0; t < totalSamples; t++) {
       double progress = t / totalSamples;
-      
+
       // Phase frequency interpolation
       double freq = frequencyStart + (frequencyEnd - frequencyStart) * progress;
-      
+
       if (vibrato) {
         // Wobble frequency (boyo sound)
         double speed = 12.0 + (100.0 - softness) * 0.1;
@@ -193,7 +228,7 @@ class AudioController {
       } else if (progress > 0.85) {
         envelope = (1.0 - progress) / 0.15;
       }
-      
+
       // Softness dampens/filters high frequencies or volumes
       double expDecay = exp(-4.0 * progress);
       envelope *= expDecay;

@@ -14,6 +14,7 @@ class CreaturePainter extends CustomPainter {
   final bool isBlinking;
   final bool isRainbow; // For boost effect
   final bool isCharging;
+  final bool isPetting;
 
   CreaturePainter({
     required this.physics,
@@ -27,6 +28,7 @@ class CreaturePainter extends CustomPainter {
     required this.isBlinking,
     required this.isRainbow,
     required this.isCharging,
+    this.isPetting = false,
   });
 
   @override
@@ -39,12 +41,18 @@ class CreaturePainter extends CustomPainter {
     // 0. DRAW GROUND DROP SHADOW ON THE FLOOR (Y = size.height - 210.0)
     final floorY = size.height - 210.0;
     final distToFloor = floorY - center.dy;
-    final distancePct = ((distToFloor - PuniPhysics.baseRadius) / 350.0).clamp(0.0, 1.0);
+    final distancePct = ((distToFloor - PuniPhysics.baseRadius) / 350.0).clamp(
+      0.0,
+      1.0,
+    );
 
-    final shadowWidth = PuniPhysics.baseRadius * 2.3 * (1.0 - distancePct * 0.45);
-    final shadowHeight = PuniPhysics.baseRadius * 0.35 * (1.0 - distancePct * 0.55);
+    final shadowWidth =
+        PuniPhysics.baseRadius * 2.3 * (1.0 - distancePct * 0.45);
+    final shadowHeight =
+        PuniPhysics.baseRadius * 0.35 * (1.0 - distancePct * 0.55);
     final shadowOpacity = 0.35 * (1.0 - distancePct * 0.7);
-    final blurRadius = 3.0 + distancePct * 15.0;
+    // Blur on every frame is expensive on some Android GPUs.
+    final shadowColor = Colors.black.withOpacity(shadowOpacity * 0.9);
 
     canvas.drawOval(
       Rect.fromCenter(
@@ -52,9 +60,7 @@ class CreaturePainter extends CustomPainter {
         width: shadowWidth,
         height: shadowHeight,
       ),
-      Paint()
-        ..color = Colors.black.withOpacity(shadowOpacity)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, blurRadius),
+      Paint()..color = shadowColor,
     );
 
     // 1. GENERATE BODY PATH
@@ -86,7 +92,12 @@ class CreaturePainter extends CustomPainter {
     late Paint bodyPaint;
     if (isRainbow) {
       final time = DateTime.now().millisecondsSinceEpoch / 1000.0;
-      final color = HSLColor.fromAHSL(1.0, (time * 60) % 360, 0.85, 0.65).toColor();
+      final color = HSLColor.fromAHSL(
+        1.0,
+        (time * 60) % 360,
+        0.85,
+        0.65,
+      ).toColor();
       bodyPaint = Paint()
         ..color = color
         ..style = PaintingStyle.fill;
@@ -114,7 +125,15 @@ class CreaturePainter extends CustomPainter {
     _drawElectricSparks(canvas, center);
   }
 
-  void _drawRectEye(Canvas canvas, Offset eyeCenter, double width, double height, double radius, double rotationAngle, Paint paint) {
+  void _drawRectEye(
+    Canvas canvas,
+    Offset eyeCenter,
+    double width,
+    double height,
+    double radius,
+    double rotationAngle,
+    Paint paint,
+  ) {
     if (rotationAngle != 0.0) {
       canvas.save();
       canvas.translate(eyeCenter.dx, eyeCenter.dy);
@@ -141,22 +160,22 @@ class CreaturePainter extends CustomPainter {
   Offset _apply3DSpinAndLift(Offset offset, double spinAngle, double radius) {
     double px = -radius * 1.15;
     double py = radius * 0.85; // Pivot at bottom-left corner
-    
+
     // 1. 3D horizontal compression
     double tx = px + (offset.dx - px) * cos(spinAngle);
     double ty = offset.dy;
-    
+
     // 2. Lift/roll rotation around pivot (counter-clockwise roll lifts right side)
     double rollAngle = -0.28 * sin(spinAngle).abs();
     double cosR = cos(rollAngle);
     double sinR = sin(rollAngle);
-    
+
     double dx = tx - px;
     double dy = ty - py;
-    
+
     double finalX = px + dx * cosR - dy * sinR;
     double finalY = py + dx * sinR + dy * cosR;
-    
+
     return Offset(finalX, finalY);
   }
 
@@ -188,28 +207,33 @@ class CreaturePainter extends CustomPainter {
       double time = DateTime.now().millisecondsSinceEpoch / 1000.0;
       double theta = time * 3.5; // matching physics rotation speed
       double cosVal = cos(theta);
-      
+
       if (cosVal < -0.15) {
         // Facing away, hide eyes completely
         return;
       }
-      
+
       Offset leftRaw = Offset(-eyeSpacing, eyeHeightOffset) + lookOffset;
       Offset rightRaw = Offset(eyeSpacing, eyeHeightOffset) + lookOffset;
-      
-      leftEyeCenter = center + _apply3DSpinAndLift(leftRaw, theta, PuniPhysics.baseRadius);
-      rightEyeCenter = center + _apply3DSpinAndLift(rightRaw, theta, PuniPhysics.baseRadius);
+
+      leftEyeCenter =
+          center + _apply3DSpinAndLift(leftRaw, theta, PuniPhysics.baseRadius);
+      rightEyeCenter =
+          center + _apply3DSpinAndLift(rightRaw, theta, PuniPhysics.baseRadius);
     } else {
-      leftEyeCenter = center + Offset(-eyeSpacing, eyeHeightOffset) + lookOffset;
-      rightEyeCenter = center + Offset(eyeSpacing, eyeHeightOffset) + lookOffset;
+      leftEyeCenter =
+          center + Offset(-eyeSpacing, eyeHeightOffset) + lookOffset;
+      rightEyeCenter =
+          center + Offset(eyeSpacing, eyeHeightOffset) + lookOffset;
     }
 
     // Clamp eyes to stay strictly inside transparent wall boundaries
     final minX = 25.0;
     final maxX = size.width - 25.0;
     final minY = 25.0;
-    final maxY = size.height - 210.0 - 8.0; // keep it above the action panel line
-    
+    final maxY =
+        size.height - 210.0 - 8.0; // keep it above the action panel line
+
     leftEyeCenter = Offset(
       leftEyeCenter.dx.clamp(minX, maxX),
       leftEyeCenter.dy.clamp(minY, maxY),
@@ -222,10 +246,6 @@ class CreaturePainter extends CustomPainter {
     final eyePaint = Paint()
       ..color = const Color(0xFF1E1E24)
       ..style = PaintingStyle.fill;
-
-
-
-
 
     if (isBlinking) {
       _drawRectEye(canvas, leftEyeCenter, 10, 2, 0.5, 0.0, eyePaint);
@@ -241,8 +261,24 @@ class CreaturePainter extends CustomPainter {
         _drawRectEye(canvas, rightEyeCenter, 10, 2.5, 0.5, pi / 10.0, eyePaint);
       } else if (mood == 'sad' || mood == 'surprised') {
         // Painful (痛そう) -> "逆八の字" shape eyes (\ / shape)
-        _drawRectEye(canvas, leftEyeCenter, 5.5, 13.5, 1.0, -pi / 8.0, eyePaint);
-        _drawRectEye(canvas, rightEyeCenter, 5.5, 13.5, 1.0, pi / 8.0, eyePaint);
+        _drawRectEye(
+          canvas,
+          leftEyeCenter,
+          5.5,
+          13.5,
+          1.0,
+          -pi / 8.0,
+          eyePaint,
+        );
+        _drawRectEye(
+          canvas,
+          rightEyeCenter,
+          5.5,
+          13.5,
+          1.0,
+          pi / 8.0,
+          eyePaint,
+        );
       } else {
         // Normal listless/low-energy look (dull horizontal slit eyes)
         _drawRectEye(canvas, leftEyeCenter, 9.5, 4.0, 1.0, 0.0, eyePaint);
@@ -252,9 +288,9 @@ class CreaturePainter extends CustomPainter {
       // Energetic states when energy is available
       switch (mood) {
         case 'happy':
-          // Shy / Embarrassed (照れ) -> Happy downward u u arcs
-          _drawArcEye(canvas, leftEyeCenter, 10.0, 7.0, true, eyePaint);
-          _drawArcEye(canvas, rightEyeCenter, 10.0, 7.0, true, eyePaint);
+          // ^ ^ 上向きアーク（興奮・うれしい顔）
+          _drawArcEye(canvas, leftEyeCenter, 11.0, 8.0, false, eyePaint);
+          _drawArcEye(canvas, rightEyeCenter, 11.0, 8.0, false, eyePaint);
           break;
 
         case 'sleepy':
@@ -263,8 +299,24 @@ class CreaturePainter extends CustomPainter {
           break;
 
         case 'angry':
-          _drawRectEye(canvas, leftEyeCenter, 5.5, 13.5, 1.0, -pi / 8.0, eyePaint);
-          _drawRectEye(canvas, rightEyeCenter, 5.5, 13.5, 1.0, pi / 8.0, eyePaint);
+          _drawRectEye(
+            canvas,
+            leftEyeCenter,
+            5.5,
+            13.5,
+            1.0,
+            -pi / 8.0,
+            eyePaint,
+          );
+          _drawRectEye(
+            canvas,
+            rightEyeCenter,
+            5.5,
+            13.5,
+            1.0,
+            pi / 8.0,
+            eyePaint,
+          );
           break;
 
         case 'surprised':
@@ -275,71 +327,147 @@ class CreaturePainter extends CustomPainter {
 
         case 'sad':
           // Painful (痛そう) -> "逆八の字" shape eyes (\ / shape)
-          _drawRectEye(canvas, leftEyeCenter, 5.5, 13.5, 1.0, -pi / 8.0, eyePaint);
-          _drawRectEye(canvas, rightEyeCenter, 5.5, 13.5, 1.0, pi / 8.0, eyePaint);
+          _drawRectEye(
+            canvas,
+            leftEyeCenter,
+            5.5,
+            13.5,
+            1.0,
+            -pi / 8.0,
+            eyePaint,
+          );
+          _drawRectEye(
+            canvas,
+            rightEyeCenter,
+            5.5,
+            13.5,
+            1.0,
+            pi / 8.0,
+            eyePaint,
+          );
           break;
 
         case 'normal':
         default:
-          _drawRectEye(canvas, leftEyeCenter, 5.5, 13.5, 1.0, 0.0, eyePaint);
-          _drawRectEye(canvas, rightEyeCenter, 5.5, 13.5, 1.0, 0.0, eyePaint);
+          if (isPetting) {
+            // ペット中: 細い横スリット目でタッチに軽く追従
+            _drawRectEye(canvas, leftEyeCenter, 11.0, 2.5, 0.8, 0.0, eyePaint);
+            _drawRectEye(canvas, rightEyeCenter, 11.0, 2.5, 0.8, 0.0, eyePaint);
+          } else {
+            _drawRectEye(canvas, leftEyeCenter, 5.5, 13.5, 1.0, 0.0, eyePaint);
+            _drawRectEye(canvas, rightEyeCenter, 5.5, 13.5, 1.0, 0.0, eyePaint);
+          }
           break;
       }
     }
+  }
+
+  void _drawSmileEye(Canvas canvas, Offset center, double radius, Paint paint) {
+    // 上半分: 上向きアーク（まぶた）
+    final path = Path();
+    path.addArc(
+      Rect.fromCenter(center: center, width: radius * 2, height: radius * 1.4),
+      pi,
+      pi,
+    );
+    final strokePaint = Paint()
+      ..color = paint.color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(path, strokePaint);
+    // 下半分: 下向き小アーク（にっこり口元）
+    final path2 = Path();
+    path2.addArc(
+      Rect.fromCenter(
+        center: Offset(center.dx, center.dy + 2),
+        width: radius * 1.6,
+        height: radius * 0.8,
+      ),
+      0,
+      pi,
+    );
+    canvas.drawPath(path2, strokePaint);
   }
 
   void _drawElectricSparks(Canvas canvas, Offset center) {
     if (!isCharging) return;
 
-    final sparkPaint = Paint()
-      ..color = const Color(0xFFFFEE58) // Bright electric neon yellow
+    final ringPaint = Paint()
+      ..color = Colors.white.withOpacity(0.55)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..strokeCap = StrokeCap.round
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.0);
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+
+    final sparkPaint = Paint()
+      ..color = Colors.white.withOpacity(0.8)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round;
+
+    final glowPaint = Paint()
+      ..color = Colors.white.withOpacity(0.75)
+      ..style = PaintingStyle.fill;
 
     final nodeCount = PuniPhysics.nodeCount;
-    final random = Random(DateTime.now().millisecondsSinceEpoch ~/ 80);
-    
-    // 3 perimeter sparks cycling around the body in a loop
-    int baseIdx = (DateTime.now().millisecondsSinceEpoch ~/ 60) % nodeCount;
+    if (nodeCount < 2) return;
 
-    for (int s = 0; s < 3; s++) {
-      int startIdx = (baseIdx + s * 4) % nodeCount;
-      Path sparkPath = Path();
-      
-      Offset startPos = center + physics.nodePositions[startIdx];
-      sparkPath.moveTo(startPos.dx, startPos.dy);
+    // A single bright segment that travels around the perimeter.
+    final tick = DateTime.now().millisecondsSinceEpoch;
+    final head = (tick ~/ 36) % nodeCount;
+    const int trailLength = 5;
 
-      for (int step = 1; step <= 3; step++) {
-        int fromIdx = (startIdx + step - 1) % nodeCount;
-        int toIdx = (startIdx + step) % nodeCount;
-        
-        Offset pFrom = center + physics.nodePositions[fromIdx];
-        Offset pTo = center + physics.nodePositions[toIdx];
-        
-        const int subdivisions = 3;
-        for (int sub = 1; sub <= subdivisions; sub++) {
-          double t = sub / subdivisions;
-          Offset midPoint = Offset.lerp(pFrom, pTo, t)!;
-          
-          Offset segDir = pTo - pFrom;
-          double segDist = segDir.distance;
-          if (segDist > 0.1) {
-            Offset perp = Offset(-segDir.dy / segDist, segDir.dx / segDist);
-            double jitterAmount = (random.nextDouble() - 0.5) * 12.0;
-            if (sub == subdivisions) jitterAmount = 0.0;
-            
-            midPoint += perp * jitterAmount;
-          }
-          sparkPath.lineTo(midPoint.dx, midPoint.dy);
-        }
-      }
-      canvas.drawPath(sparkPath, sparkPaint);
+    final orbitPath = Path();
+    final start = center + physics.nodePositions[head];
+    orbitPath.moveTo(start.dx, start.dy);
+
+    for (int i = 1; i <= trailLength; i++) {
+      final idx = (head + i) % nodeCount;
+      final p = center + physics.nodePositions[idx];
+      orbitPath.lineTo(p.dx, p.dy);
+    }
+
+    canvas.drawPath(orbitPath, ringPaint);
+
+    // Add small spark accents near the moving head for a crackling feel.
+    final headPoint = start;
+    final prevPoint =
+        center + physics.nodePositions[(head - 1 + nodeCount) % nodeCount];
+    final dir = headPoint - prevPoint;
+    final len = dir.distance;
+    if (len > 0.001) {
+      final unit = dir / len;
+      final perp = Offset(-unit.dy, unit.dx);
+
+      // Soft pulsing based on time, deterministic and cheap.
+      final pulse = 0.7 + 0.3 * sin(tick / 90.0);
+      final sparkLen = 6.0 * pulse;
+      final spread = 4.0;
+
+      final a1 = headPoint + perp * spread;
+      final b1 = a1 + unit * sparkLen;
+      final c1 = b1 + perp * (spread * 0.6);
+      canvas.drawLine(a1, b1, sparkPaint);
+      canvas.drawLine(b1, c1, sparkPaint);
+
+      final a2 = headPoint - perp * spread;
+      final b2 = a2 + unit * (sparkLen * 0.9);
+      final c2 = b2 - perp * (spread * 0.6);
+      canvas.drawLine(a2, b2, sparkPaint);
+      canvas.drawLine(b2, c2, sparkPaint);
+
+      canvas.drawCircle(headPoint, 1.8 * pulse, glowPaint);
     }
   }
 
-  void _drawArcEye(Canvas canvas, Offset center, double width, double height, bool isShy, Paint paint) {
+  void _drawArcEye(
+    Canvas canvas,
+    Offset center,
+    double width,
+    double height,
+    bool isShy,
+    Paint paint,
+  ) {
     final rect = Rect.fromCenter(center: center, width: width, height: height);
     final prevStyle = paint.style;
     final prevColor = paint.color;
@@ -359,14 +487,22 @@ class CreaturePainter extends CustomPainter {
     final prevStyle = paint.style;
     final prevStrokeWidth = paint.strokeWidth;
     final prevStrokeCap = paint.strokeCap;
-    
+
     paint.style = PaintingStyle.stroke;
     paint.strokeWidth = 3.0;
     paint.strokeCap = StrokeCap.round;
-    
-    canvas.drawLine(center + Offset(-size/2, -size/2), center + Offset(size/2, size/2), paint);
-    canvas.drawLine(center + Offset(-size/2, size/2), center + Offset(size/2, -size/2), paint);
-    
+
+    canvas.drawLine(
+      center + Offset(-size / 2, -size / 2),
+      center + Offset(size / 2, size / 2),
+      paint,
+    );
+    canvas.drawLine(
+      center + Offset(-size / 2, size / 2),
+      center + Offset(size / 2, -size / 2),
+      paint,
+    );
+
     paint.style = prevStyle;
     paint.strokeWidth = prevStrokeWidth;
     paint.strokeCap = prevStrokeCap;
@@ -376,12 +512,14 @@ class CreaturePainter extends CustomPainter {
     final paint = Paint()
       ..color = const Color(0xFF29B6F6)
       ..style = PaintingStyle.fill;
-    
+
     Path path = Path();
     path.moveTo(position.dx, position.dy - 8.0);
     path.quadraticBezierTo(
-      position.dx - 5.0, position.dy + 1.0,
-      position.dx - 5.0, position.dy + 4.0,
+      position.dx - 5.0,
+      position.dy + 1.0,
+      position.dx - 5.0,
+      position.dy + 4.0,
     );
     path.arcToPoint(
       Offset(position.dx + 5.0, position.dy + 4.0),
@@ -389,8 +527,10 @@ class CreaturePainter extends CustomPainter {
       clockwise: false,
     );
     path.quadraticBezierTo(
-      position.dx + 5.0, position.dy + 1.0,
-      position.dx, position.dy - 8.0,
+      position.dx + 5.0,
+      position.dy + 1.0,
+      position.dx,
+      position.dy - 8.0,
     );
     path.close();
     canvas.drawPath(path, paint);
@@ -402,18 +542,18 @@ class CreaturePainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
-      
+
     double time = DateTime.now().millisecondsSinceEpoch / 250.0;
     canvas.save();
     canvas.translate(position.dx, position.dy);
     canvas.rotate(time);
-    
+
     canvas.drawLine(const Offset(-8, -8), const Offset(-2, -2), paint);
     canvas.drawLine(const Offset(-8, -2), const Offset(-2, -8), paint);
-    
+
     canvas.drawLine(const Offset(2, 2), const Offset(8, 8), paint);
     canvas.drawLine(const Offset(2, 8), const Offset(8, 2), paint);
-    
+
     canvas.restore();
   }
 

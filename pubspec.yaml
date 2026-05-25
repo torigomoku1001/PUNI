@@ -94,6 +94,16 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
+  fonts:
+    - family: FredokaLocal
+      fonts:
+        - asset: assets/fonts/Fredoka-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Fredoka-Regular.ttf
+          weight: 600
+        - asset: assets/fonts/Fredoka-Regular.ttf
+          weight: 800
+
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
