@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:battery_plus/battery_plus.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../physics/puni_physics.dart';
 import '../views/creature_painter.dart';
 import '../state/creature_state.dart';
@@ -60,7 +62,12 @@ class _HomeScreenState extends State<HomeScreen>
 
   // Idle movement timers
   double _timeSinceLastJump = 0.0;
-  bool _wasFlungByUser = false;
+  double _timeSinceNoInteraction = 0.0;
+  double _chargingRecoveryAccumulator = 0.0;
+  int _lastKnownLevel = 1;
+  bool _hasInitializedLevelTracking = false;
+  double _levelUpSparkleTimer = 0.0;
+  static const double _levelUpSparkleDuration = 1.5;
 
   // Interactive touch mode: 'drag' or 'pet'
   String _interactionMode = 'drag';
@@ -76,10 +83,29 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isBlinking = false;
   Timer? _blinkTimer;
 
-  // Ad simulation states
-  bool _showInterstitialAd = false;
-  int _adCountdown = 4;
-  Timer? _adTimer;
+  // AdMob states
+  BannerAd? _bannerAd;
+  bool _isBannerAdReady = false;
+  InterstitialAd? _interstitialAd;
+  bool _isShowingInterstitialAd = false;
+
+  String get _bannerAdUnitId {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.iOS:
+        return 'ca-app-pub-3940256099942544/2934735716';
+      default:
+        return 'ca-app-pub-3940256099942544/6300978111';
+    }
+  }
+
+  String get _interstitialAdUnitId {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.iOS:
+        return 'ca-app-pub-3940256099942544/4411468910';
+      default:
+        return 'ca-app-pub-3940256099942544/1033173712';
+    }
+  }
 
   @override
   void initState() {
@@ -89,6 +115,8 @@ class _HomeScreenState extends State<HomeScreen>
     _audioController = AudioController();
 
     _state.addListener(_onStateChange);
+    _lastKnownLevel = _state.level;
+    _hasInitializedLevelTracking = true;
 
     // Initialize 60fps physics game loop
     _gameLoopController = AnimationController(
@@ -151,16 +179,38 @@ class _HomeScreenState extends State<HomeScreen>
       });
     });
 
+    _loadBannerAd();
+    _loadInterstitialAd();
+
     _startBlinkCycle();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _audioController.playStartupVoice();
+    });
   }
 
   void _onStateChange() {
+    if (!_hasInitializedLevelTracking) {
+      _lastKnownLevel = _state.level;
+      _hasInitializedLevelTracking = true;
+    } else if (_state.level > _lastKnownLevel) {
+      _triggerLevelUpFeedback();
+      _lastKnownLevel = _state.level;
+    } else {
+      _lastKnownLevel = _state.level;
+    }
+
     if (!_state.isRainbow) {
       setState(() {
         _primaryColor = _state.creatureColor;
         _secondaryColor = _state.creatureColor.withOpacity(0.7);
       });
     }
+  }
+
+  void _triggerLevelUpFeedback() {
+    _audioController.playLevelUpVoice();
+    _levelUpSparkleTimer = _levelUpSparkleDuration;
   }
 
   void _tickPhysics() {
@@ -179,8 +229,18 @@ class _HomeScreenState extends State<HomeScreen>
         _timeSinceLastJump = 0.0;
         double jumpImpulseX = (Random().nextDouble() - 0.5) * 320.0;
         _physics.centerVelocity = Offset(jumpImpulseX, -380.0); // Jump up!
-        _audioController.playBoyo(_state.softness);
         _state.triggerMood('happy', duration: const Duration(seconds: 2));
+      }
+    }
+
+    // Idle voice: once every 5 seconds while there is no player interference.
+    if (_state.isDragging || _state.isPetting) {
+      _timeSinceNoInteraction = 0.0;
+    } else {
+      _timeSinceNoInteraction += dt;
+      if (_timeSinceNoInteraction >= 5.0) {
+        _timeSinceNoInteraction = 0.0;
+        _audioController.playIdleVoice();
       }
     }
 
@@ -197,36 +257,18 @@ class _HomeScreenState extends State<HomeScreen>
       isCharging: _isCharging,
     );
 
-    // Detect high-impact wall/floor collision to trigger 'sad' pain expression
-    final speed = _physics.centerVelocity.distance;
-    if (speed > 220.0 && !_state.isDragging) {
-      double leftBoundary = 20.0 + PuniPhysics.baseRadius;
-      double rightBoundary = boundarySize.width - 20.0 - PuniPhysics.baseRadius;
-      double bottomBoundary =
-          boundarySize.height - 20.0 - PuniPhysics.baseRadius - 190.0;
+    if (_levelUpSparkleTimer > 0.0) {
+      _levelUpSparkleTimer = max(0.0, _levelUpSparkleTimer - dt);
+    }
 
-      bool hitWall =
-          (_physics.center.dx <= leftBoundary + 8.0) ||
-          (_physics.center.dx >= rightBoundary - 8.0);
-      bool hitFloor = (_physics.center.dy >= bottomBoundary - 8.0);
-
-      if (hitWall || hitFloor) {
-        if (_wasFlungByUser) {
-          // Thrown by user: painful look!
-          _state.triggerMood(
-            'sad',
-            duration: const Duration(milliseconds: 1500),
-          );
-        } else {
-          // Autonomous jump/hop: happy / excited look!
-          _state.triggerMood(
-            'happy',
-            duration: const Duration(milliseconds: 1000),
-          );
-        }
-        _audioController.playBoyo(_state.softness); // Extra bounce feedback
-        _wasFlungByUser = false; // Reset fling status after bounce impact
+    if (_isCharging && _state.energy < 100.0) {
+      _chargingRecoveryAccumulator += dt;
+      if (_chargingRecoveryAccumulator >= 5.0) {
+        _state.addChargingEnergySeconds(_chargingRecoveryAccumulator);
+        _chargingRecoveryAccumulator = 0.0;
       }
+    } else {
+      _chargingRecoveryAccumulator = 0.0;
     }
 
     // Update food particles
@@ -250,8 +292,8 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _eatFood() {
-    _audioController.playChime();
-    _state.triggerMood('happy', duration: const Duration(seconds: 3));
+    _audioController.playFeedVoice();
+    _state.triggerMood('eating', duration: const Duration(seconds: 2));
     _state.addGrowth(0.12, source: 'feed'); // Growth from eating
 
     // Push boundary nodes outward wobbly
@@ -276,8 +318,8 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _handlePointerDown(PointerDownEvent event) {
-    _wasFlungByUser = false;
-    if (_showInterstitialAd) return;
+    _timeSinceNoInteraction = 0.0;
+    if (_isShowingInterstitialAd) return;
     final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
     final localPosition = renderBox.globalToLocal(event.position);
@@ -292,7 +334,7 @@ class _HomeScreenState extends State<HomeScreen>
           isPetting: false,
           touchPosition: localPosition,
         );
-        _audioController.playPuni(_state.softness);
+        _audioController.playGrabVoice(hasEnergy: _state.energy > 0.0);
       } else {
         _state.setInteraction(
           isDragging: false,
@@ -309,7 +351,8 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
-    if (_showInterstitialAd) return;
+    _timeSinceNoInteraction = 0.0;
+    if (_isShowingInterstitialAd) return;
     final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
     final localPosition = renderBox.globalToLocal(event.position);
@@ -323,9 +366,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (Random().nextDouble() < 0.12) {
         if (_interactionMode == 'drag') {
-          _audioController.playMuni(_state.softness);
         } else {
-          _audioController.playPuni(_state.softness);
           _state.addGrowth(0.002, source: 'petting'); // Tiny petting growth
         }
       }
@@ -333,11 +374,14 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    _timeSinceNoInteraction = 0.0;
+    final wasPetting = _state.isPetting;
+    final hasEnergyAtRelease = _state.energy > 0.0;
+
     if (_state.isDragging) {
       double flingSpeed = _physics.centerVelocity.distance;
       if (flingSpeed > 320.0) {
-        _wasFlungByUser = true;
-        _audioController.playBoyo(_state.softness);
+        _audioController.playFlingVoice(hasEnergy: _state.energy > 0.0);
         if (_state.energy <= 0.0) {
           // Out of energy: hurts (痛そう) -> sad/X-eyes mood
           _state.triggerMood('sad', duration: const Duration(seconds: 3));
@@ -353,6 +397,10 @@ class _HomeScreenState extends State<HomeScreen>
       isPetting: false,
       touchPosition: null,
     );
+
+    if (wasPetting) {
+      _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
+    }
   }
 
   void _spawnFood() {
@@ -370,26 +418,87 @@ class _HomeScreenState extends State<HomeScreen>
 
   // Watch interstitial ad to Level Up
   void _watchAdToLevelUp() {
-    setState(() {
-      _showInterstitialAd = true;
-      _adCountdown = 4;
-    });
+    if (_isShowingInterstitialAd) return;
+    final ad = _interstitialAd;
 
-    _adTimer?.cancel();
-    _adTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_adCountdown > 1) {
-        setState(() {
-          _adCountdown--;
-        });
-      } else {
-        _adTimer?.cancel();
-        setState(() {
-          _showInterstitialAd = false;
-        });
-        _state.performAdLevelUp();
-        _audioController.playLevelUp();
-      }
-    });
+    if (ad == null) {
+      _loadInterstitialAd();
+      _grantAdLevelUpResult();
+      return;
+    }
+
+    _isShowingInterstitialAd = true;
+    _interstitialAd = null;
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (ad) {
+        ad.dispose();
+        _isShowingInterstitialAd = false;
+        _grantAdLevelUpResult();
+        _loadInterstitialAd();
+      },
+      onAdFailedToShowFullScreenContent: (ad, error) {
+        ad.dispose();
+        _isShowingInterstitialAd = false;
+        _grantAdLevelUpResult();
+        _loadInterstitialAd();
+      },
+    );
+    ad.show();
+  }
+
+  void _grantAdLevelUpResult() {
+    final beforeLevel = _state.level;
+    _state.performAdLevelUp();
+    if (_state.level > beforeLevel) {
+      _triggerLevelUpFeedback();
+      _lastKnownLevel = _state.level;
+      _hasInitializedLevelTracking = true;
+    }
+  }
+
+  void _loadBannerAd() {
+    final ad = BannerAd(
+      adUnitId: _bannerAdUnitId,
+      request: const AdRequest(),
+      size: AdSize.banner,
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) {
+            ad.dispose();
+            return;
+          }
+          setState(() {
+            _bannerAd = ad as BannerAd;
+            _isBannerAdReady = true;
+          });
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          if (!mounted) return;
+          setState(() {
+            _bannerAd = null;
+            _isBannerAdReady = false;
+          });
+        },
+      ),
+    );
+
+    ad.load();
+  }
+
+  void _loadInterstitialAd() {
+    InterstitialAd.load(
+      adUnitId: _interstitialAdUnitId,
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          _interstitialAd = ad;
+        },
+        onAdFailedToLoad: (error) {
+          _interstitialAd = null;
+        },
+      ),
+    );
   }
 
   void _showAppleHealthSyncDialog() {
@@ -663,6 +772,59 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  void _showEnergyRecoveryGuideDialog() {
+    showCupertinoDialog(
+      context: context,
+      builder: (ctx) {
+        return CupertinoAlertDialog(
+          title: Text(
+            'ぷにエネルギー回復ルール',
+            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+          ),
+          content: Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '・散歩: 1歩ごとに +0.02\n  (100歩で +2.0)',
+                  style: GoogleFonts.notoSansJp(fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '・睡眠: 1時間ごとに +10.0',
+                  style: GoogleFonts.notoSansJp(fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '・充電: 1分ごとに +0.5\n  (10分で +5.0)',
+                  style: GoogleFonts.notoSansJp(fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '※ 上限は 100.0 です。',
+                  style: GoogleFonts.notoSansJp(
+                    fontSize: 12,
+                    color: CupertinoColors.systemGrey,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text(
+                'OK',
+                style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   LinearGradient _getBackgroundGradient() {
     int hour = DateTime.now().hour;
     if (_state.isRainbow) {
@@ -712,6 +874,8 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final textThemeColor = _getTextColor();
+    final sparkleProgress = (_levelUpSparkleTimer / _levelUpSparkleDuration)
+        .clamp(0.0, 1.0);
 
     return Scaffold(
       body: Stack(
@@ -744,6 +908,18 @@ class _HomeScreenState extends State<HomeScreen>
                   isPetting: _state.isPetting,
                 ),
                 child: Container(),
+              ),
+            ),
+          ),
+
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _LevelUpSparklePainter(
+                  center: _physics.center,
+                  progress: sparkleProgress,
+                  baseRadius: PuniPhysics.baseRadius,
+                ),
               ),
             ),
           ),
@@ -1095,93 +1271,24 @@ class _HomeScreenState extends State<HomeScreen>
                           textThemeColor: textThemeColor,
                           onPressed: _watchAdToLevelUp,
                         ),
+                        _buildActionButton(
+                          icon: Icons.info_outline,
+                          label: "回復説明",
+                          isActive: false,
+                          textThemeColor: textThemeColor,
+                          onPressed: _showEnergyRecoveryGuideDialog,
+                        ),
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
 
-                // Static Premium Glassmorphic Banner Ad
+                // AdMob test banner ad
                 _buildBannerAd(textThemeColor),
               ],
             ),
           ),
-
-          // 7. Video Interstitial Ad Simulator Overlay
-          if (_showInterstitialAd)
-            Positioned.fill(
-              child: Container(
-                color: Colors.black.withOpacity(0.85),
-                child: Center(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(24),
-                    child: Container(
-                      width: min(media.size.width * 0.85, 330.0),
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[950],
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.15),
-                        ),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(
-                            width: 44,
-                            height: 44,
-                            child: CircularProgressIndicator(
-                              color: Color(0xFFFF2A6D),
-                              strokeWidth: 4,
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          Text(
-                            "Puni Pop Adventure Ad",
-                            style: GoogleFonts.outfit(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            "Watch to gain an instant level up!",
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.outfit(
-                              color: Colors.grey[400],
-                              fontSize: 14,
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFF2A6D).withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: const Color(0xFFFF2A6D).withOpacity(0.3),
-                              ),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 12,
-                            ),
-                            child: Text(
-                              "Close video in: $_adCountdown",
-                              style: GoogleFonts.outfit(
-                                color: const Color(0xFFFF2A6D),
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -1224,6 +1331,14 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildBannerAd(Color textThemeColor) {
+    if (_isBannerAdReady && _bannerAd != null) {
+      return SizedBox(
+        width: _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child: AdWidget(ad: _bannerAd!),
+      );
+    }
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: Container(
@@ -1310,10 +1425,93 @@ class _HomeScreenState extends State<HomeScreen>
     _gameLoopController.dispose();
     _accelerometerSub?.cancel();
     _batterySub?.cancel();
-    _adTimer?.cancel();
+    _bannerAd?.dispose();
+    _interstitialAd?.dispose();
     _blinkTimer?.cancel();
     _state.removeListener(_onStateChange);
+    _audioController.dispose();
     _state.dispose();
     super.dispose();
+  }
+}
+
+class _LevelUpSparklePainter extends CustomPainter {
+  final Offset center;
+  final double progress;
+  final double baseRadius;
+
+  _LevelUpSparklePainter({
+    required this.center,
+    required this.progress,
+    required this.baseRadius,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0.0) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final fade = Curves.easeOut.transform(progress);
+    final twinkle = 0.72 + 0.28 * sin(now * 16.0);
+    final alpha = (0.54 * fade * twinkle).clamp(0.0, 1.0);
+
+    final ringRadius = baseRadius * (1.45 + (1.0 - progress) * 0.28);
+    final ringPaint = Paint()
+      ..color = const Color(0xFFFDFCF7).withValues(alpha: alpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2;
+    canvas.drawCircle(center, ringRadius, ringPaint);
+
+    final outerRingPaint = Paint()
+      ..color = const Color(0xFFFFFFFF).withValues(alpha: alpha * 0.52)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3;
+    canvas.drawCircle(center, ringRadius + 10.0, outerRingPaint);
+
+    final sparklePaint = Paint()
+      ..color = const Color(
+        0xFFFFF8D6,
+      ).withValues(alpha: (alpha * 1.15).clamp(0.0, 1.0))
+      ..style = PaintingStyle.fill;
+
+    const int sparkleCount = 18;
+    for (int i = 0; i < sparkleCount; i++) {
+      final angle = (2 * pi * i / sparkleCount) + now * 0.9;
+      final radialJitter = 8.0 * sin(now * 5.1 + i * 0.8);
+      final sparkleCenter =
+          center + Offset(cos(angle), sin(angle)) * (ringRadius + radialJitter);
+
+      final pulse = 0.65 + 0.35 * sin(now * 10.0 + i);
+      final r = (1.7 + 2.4 * fade * pulse).clamp(1.0, 4.6);
+      canvas.drawCircle(sparkleCenter, r, sparklePaint);
+
+      // Four-point tiny star for subtle glitter.
+      final lineLength = r * 2.2;
+      final starPaint = Paint()
+        ..color = const Color(
+          0xFFFFFFFF,
+        ).withValues(alpha: (alpha * 0.9 * pulse).clamp(0.0, 1.0))
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.1
+        ..strokeCap = StrokeCap.round;
+
+      canvas.drawLine(
+        sparkleCenter + Offset(-lineLength, 0),
+        sparkleCenter + Offset(lineLength, 0),
+        starPaint,
+      );
+      canvas.drawLine(
+        sparkleCenter + Offset(0, -lineLength),
+        sparkleCenter + Offset(0, lineLength),
+        starPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LevelUpSparklePainter oldDelegate) {
+    return oldDelegate.center != center ||
+        oldDelegate.progress != progress ||
+        oldDelegate.baseRadius != baseRadius;
   }
 }

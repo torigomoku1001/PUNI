@@ -110,13 +110,15 @@ class CreaturePainter extends CustomPainter {
     // Draw creature body
     canvas.drawPath(bodyPath, bodyPaint);
 
-    // Draw a subtle dark outline for flat styling
-    final borderPaint = Paint()
-      ..color = const Color(0xFF3C3C40)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0
-      ..strokeJoin = StrokeJoin.round;
-    canvas.drawPath(bodyPath, borderPaint);
+    // Hide the regular black outline while charging so electric sparks become the edge effect.
+    if (!isCharging) {
+      final borderPaint = Paint()
+        ..color = const Color(0xFF3C3C40)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(bodyPath, borderPaint);
+    }
 
     // 4. DRAW EYES
     _drawEyes(canvas, center, size);
@@ -250,6 +252,20 @@ class CreaturePainter extends CustomPainter {
     if (isBlinking) {
       _drawRectEye(canvas, leftEyeCenter, 10, 2, 0.5, 0.0, eyePaint);
       _drawRectEye(canvas, rightEyeCenter, 10, 2, 0.5, 0.0, eyePaint);
+      return;
+    }
+
+    if (mood == 'eating') {
+      // 1) Eating eyes: small lower arcs (∪ ∪)
+      _drawArcEye(canvas, leftEyeCenter, 9.0, 7.0, true, eyePaint);
+      _drawArcEye(canvas, rightEyeCenter, 9.0, 7.0, true, eyePaint);
+      return;
+    }
+
+    if (mood == 'levelup') {
+      // 2) Level-up eyes: bullseye double-circle (◉ ◉)
+      _drawLevelUpBullseyeEye(canvas, leftEyeCenter, eyePaint);
+      _drawLevelUpBullseyeEye(canvas, rightEyeCenter, eyePaint);
       return;
     }
 
@@ -394,40 +410,49 @@ class CreaturePainter extends CustomPainter {
     if (!isCharging) return;
 
     final ringPaint = Paint()
-      ..color = Colors.white.withOpacity(0.55)
+      ..color = const Color(0xFFCFF4FF).withValues(alpha: 0.78)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.6
+      ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round;
 
     final sparkPaint = Paint()
-      ..color = Colors.white.withOpacity(0.8)
+      ..color = const Color(0xFFFFFFFF).withValues(alpha: 0.95)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.3
+      ..strokeWidth = 2.3
       ..strokeCap = StrokeCap.round;
 
     final glowPaint = Paint()
-      ..color = Colors.white.withOpacity(0.75)
+      ..color = const Color(0xFFB8EEFF).withValues(alpha: 0.85)
       ..style = PaintingStyle.fill;
 
     final nodeCount = PuniPhysics.nodeCount;
     if (nodeCount < 2) return;
 
-    // A single bright segment that travels around the perimeter.
+    // Bright segments that travel around the perimeter.
     final tick = DateTime.now().millisecondsSinceEpoch;
     final head = (tick ~/ 36) % nodeCount;
-    const int trailLength = 5;
+    final head2 = (head + nodeCount ~/ 2) % nodeCount;
+    const int trailLength = 8;
 
-    final orbitPath = Path();
-    final start = center + physics.nodePositions[head];
-    orbitPath.moveTo(start.dx, start.dy);
-
-    for (int i = 1; i <= trailLength; i++) {
-      final idx = (head + i) % nodeCount;
-      final p = center + physics.nodePositions[idx];
-      orbitPath.lineTo(p.dx, p.dy);
+    Path buildOrbitPath(int movingHead) {
+      final path = Path();
+      final start = center + physics.nodePositions[movingHead];
+      path.moveTo(start.dx, start.dy);
+      for (int i = 1; i <= trailLength; i++) {
+        final idx = (movingHead + i) % nodeCount;
+        final p = center + physics.nodePositions[idx];
+        path.lineTo(p.dx, p.dy);
+      }
+      return path;
     }
 
+    final orbitPath = buildOrbitPath(head);
+    final orbitPath2 = buildOrbitPath(head2);
+    final start = center + physics.nodePositions[head];
+    final start2 = center + physics.nodePositions[head2];
+
     canvas.drawPath(orbitPath, ringPaint);
+    canvas.drawPath(orbitPath2, ringPaint);
 
     // Add small spark accents near the moving head for a crackling feel.
     final headPoint = start;
@@ -441,8 +466,8 @@ class CreaturePainter extends CustomPainter {
 
       // Soft pulsing based on time, deterministic and cheap.
       final pulse = 0.7 + 0.3 * sin(tick / 90.0);
-      final sparkLen = 6.0 * pulse;
-      final spread = 4.0;
+      final sparkLen = 8.0 * pulse;
+      final spread = 5.4;
 
       final a1 = headPoint + perp * spread;
       final b1 = a1 + unit * sparkLen;
@@ -456,7 +481,14 @@ class CreaturePainter extends CustomPainter {
       canvas.drawLine(a2, b2, sparkPaint);
       canvas.drawLine(b2, c2, sparkPaint);
 
-      canvas.drawCircle(headPoint, 1.8 * pulse, glowPaint);
+      final a3 = headPoint - unit * (spread * 0.55);
+      final b3 = a3 + perp * (sparkLen * 0.55);
+      final c3 = b3 + unit * (spread * 0.5);
+      canvas.drawLine(a3, b3, sparkPaint);
+      canvas.drawLine(b3, c3, sparkPaint);
+
+      canvas.drawCircle(headPoint, 2.6 * pulse, glowPaint);
+      canvas.drawCircle(start2, 2.1 * pulse, glowPaint);
     }
   }
 
@@ -481,6 +513,21 @@ class CreaturePainter extends CustomPainter {
     }
     paint.style = prevStyle;
     paint.color = prevColor;
+  }
+
+  void _drawLevelUpBullseyeEye(Canvas canvas, Offset center, Paint paint) {
+    final ringPaint = Paint()
+      ..color = paint.color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2;
+
+    final corePaint = Paint()
+      ..color = paint.color
+      ..style = PaintingStyle.fill;
+
+    // Outer ring + core dot to read as ◉.
+    canvas.drawCircle(center, 5.4, ringPaint);
+    canvas.drawCircle(center, 2.3, corePaint);
   }
 
   void _drawXEye(Canvas canvas, Offset center, double size, Paint paint) {

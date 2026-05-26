@@ -1,52 +1,217 @@
+import 'dart:collection';
 import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 class AudioController {
-  // Pool of AudioPlayers to allow overlapping sounds
-  static const int _poolSize = 4;
-  final List<AudioPlayer> _players = List.generate(
-    _poolSize,
-    (_) => AudioPlayer(),
+  late AudioPlayer _voicePlayer;
+  final Queue<Future<void> Function()> _queue =
+      Queue<Future<void> Function()>();
+  bool _isDrainingQueue = false;
+  final Map<String, int> _lastEventMs = <String, int>{};
+  final Random _random = Random();
+
+  static final AudioContext _audioContext = AudioContext(
+    android: AudioContextAndroid(
+      isSpeakerphoneOn: false,
+      stayAwake: false,
+      contentType: AndroidContentType.music,
+      usageType: AndroidUsageType.media,
+      audioFocus: AndroidAudioFocus.gain,
+    ),
+    iOS: AudioContextIOS(category: AVAudioSessionCategory.ambient, options: {}),
   );
-  int _currentPlayerIndex = 0;
 
-  // Debounce intervals to avoid excessive audio focus churn and log spam.
-  static const int _puniMinIntervalMs = 80;
-  static const int _muniMinIntervalMs = 100;
-  static const int _boyoMinIntervalMs = 150;
-  static const int _chimeMinIntervalMs = 250;
-  static const int _levelUpMinIntervalMs = 400;
-
-  int _lastPuniMs = 0;
-  int _lastMuniMs = 0;
-  int _lastBoyoMs = 0;
-  int _lastChimeMs = 0;
-  int _lastLevelUpMs = 0;
+  // Voice files.
+  static const List<String> _startupVoices = [
+    'start1.wav',
+    'start2.wav',
+    'start3.wav',
+    'start4.wav',
+    'start5.wav',
+  ];
+  static const List<String> _idleVoices = [
+    'free1.wav',
+    'free2.wav',
+    'free3.wav',
+    'free4.wav',
+    'free5.wav',
+    'free6.wav',
+    'free7.wav',
+  ];
 
   AudioController() {
-    // Warm up players
-    for (var player in _players) {
-      player.setReleaseMode(ReleaseMode.release);
+    _initPlayer();
+  }
+
+  void _initPlayer() {
+    _voicePlayer = AudioPlayer();
+    _voicePlayer.setReleaseMode(ReleaseMode.stop);
+    _voicePlayer.setPlayerMode(PlayerMode.mediaPlayer);
+    _voicePlayer.setAudioContext(_audioContext);
+    _voicePlayer.setVolume(1.0);
+  }
+
+  Future<void> _resetPlayer() async {
+    try {
+      await _voicePlayer.dispose();
+    } catch (_) {
+      // Ignore dispose errors and recreate anyway.
+    }
+    _initPlayer();
+  }
+
+  bool _canTrigger(String key, int minIntervalMs) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastEventMs[key] ?? 0;
+    if (now - last < minIntervalMs) return false;
+    _lastEventMs[key] = now;
+    return true;
+  }
+
+  void _enqueue(Future<void> Function() task, {bool highPriority = false}) {
+    if (highPriority) {
+      _queue.addFirst(task);
+    } else {
+      _queue.addLast(task);
+    }
+    _drainQueue();
+  }
+
+  Future<void> _drainQueue() async {
+    if (_isDrainingQueue) return;
+    _isDrainingQueue = true;
+
+    while (_queue.isNotEmpty) {
+      final task = _queue.removeFirst();
+      try {
+        await task();
+      } catch (e) {
+        debugPrint('Audio queue task error: $e');
+      }
+    }
+
+    _isDrainingQueue = false;
+  }
+
+  Future<void> _playAssetNow(String fileName, {double pcmGain = 1.0}) async {
+    debugPrint('Voice try: $fileName');
+    try {
+      final data = await rootBundle.load('lib/audio/$fileName');
+      final rawBytes = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      final bytes = _maybeBoostPcmWav(rawBytes, gain: pcmGain);
+      await _playBytesNow(bytes);
+    } catch (e) {
+      debugPrint('Audio route recovery(asset): $e');
+      await _resetPlayer();
+      final data = await rootBundle.load('lib/audio/$fileName');
+      final rawBytes = data.buffer.asUint8List(
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      final bytes = _maybeBoostPcmWav(rawBytes, gain: pcmGain);
+      await _playBytesNow(bytes);
     }
   }
 
-  AudioPlayer get _nextPlayer {
-    final player = _players[_currentPlayerIndex];
-    _currentPlayerIndex = (_currentPlayerIndex + 1) % _poolSize;
-    return player;
+  Future<void> _playBytesNow(Uint8List bytes) async {
+    try {
+      await _voicePlayer.stop();
+      await _voicePlayer.setAudioContext(_audioContext);
+      await _voicePlayer.setVolume(1.0);
+      await _voicePlayer.play(BytesSource(bytes));
+      await _voicePlayer.onPlayerComplete.first.timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => null,
+      );
+    } catch (e) {
+      debugPrint('Audio route recovery(bytes): $e');
+      await _resetPlayer();
+      await _voicePlayer.stop();
+      await _voicePlayer.setAudioContext(_audioContext);
+      await _voicePlayer.setVolume(1.0);
+      await _voicePlayer.play(BytesSource(bytes));
+      await _voicePlayer.onPlayerComplete.first.timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => null,
+      );
+    }
   }
 
-  bool _canPlay(int lastMs, int minIntervalMs) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    return now - lastMs >= minIntervalMs;
+  Future<void> resetAudioSession() async {
+    _queue.clear();
+    await _resetPlayer();
+  }
+
+  void _enqueueRandom(
+    List<String> files, {
+    required String key,
+    required int minIntervalMs,
+    bool highPriority = false,
+  }) {
+    if (files.isEmpty) return;
+    if (!_canTrigger(key, minIntervalMs)) return;
+    final selected = files[_random.nextInt(files.length)];
+    _enqueue(() => _playAssetNow(selected), highPriority: highPriority);
+  }
+
+  Future<void> playStartupVoice() async {
+    _enqueueRandom(
+      _startupVoices,
+      key: 'startup',
+      minIntervalMs: 0,
+      highPriority: true,
+    );
+  }
+
+  Future<void> playIdleVoice() async {
+    _enqueueRandom(_idleVoices, key: 'idle', minIntervalMs: 4000);
+  }
+
+  Future<void> playGrabVoice({required bool hasEnergy}) async {
+    _enqueue(
+      () => _playAssetNow(hasEnergy ? 'pulusdrag.wav' : 'zerodrag.wav'),
+      highPriority: true,
+    );
+  }
+
+  Future<void> playFlingVoice({required bool hasEnergy}) async {
+    _enqueue(
+      () => _playAssetNow(hasEnergy ? 'plussrrow.wav' : 'iya-.wav'),
+      highPriority: true,
+    );
+  }
+
+  Future<void> playPetEndVoice({required bool hasEnergy}) async {
+    _enqueue(
+      () => _playAssetNow(hasEnergy ? 'plusnade.wav' : 'zeronade.wav'),
+      highPriority: true,
+    );
+  }
+
+  Future<void> playWallHitVoice({
+    required int level,
+    required bool hasEnergy,
+  }) async {
+    // Wall hit sound removed per design decision.
+  }
+
+  Future<void> playLevelUpVoice() async {
+    _enqueue(() => _playAssetNow('waho-i.wav'), highPriority: true);
+  }
+
+  Future<void> playFeedVoice() async {
+    _enqueue(() => _playAssetNow('food.wav'), highPriority: true);
   }
 
   /// Synthesizes and plays a "puni" (squishy squeeze) sound.
   /// Lower softness = higher, tighter pitch. Higher softness = lower, wetter pitch.
   void playPuni(double softness) {
-    if (!_canPlay(_lastPuniMs, _puniMinIntervalMs)) return;
-    _lastPuniMs = DateTime.now().millisecondsSinceEpoch;
+    if (!_canTrigger('puni', 90)) return;
 
     // Softness goes 0 -> 100
     double pct = (softness / 100.0).clamp(0.0, 1.0);
@@ -63,13 +228,12 @@ class AudioController {
       vibrato: false,
     );
 
-    _playBytes(wavBytes);
+    _enqueue(() => _playBytesNow(wavBytes));
   }
 
   /// Synthesizes and plays a "muni" (stretch/pull) sound.
   void playMuni(double softness) {
-    if (!_canPlay(_lastMuniMs, _muniMinIntervalMs)) return;
-    _lastMuniMs = DateTime.now().millisecondsSinceEpoch;
+    if (!_canTrigger('muni', 100)) return;
 
     double pct = (softness / 100.0).clamp(0.0, 1.0);
 
@@ -85,13 +249,12 @@ class AudioController {
       vibrato: false,
     );
 
-    _playBytes(wavBytes);
+    _enqueue(() => _playBytesNow(wavBytes));
   }
 
   /// Synthesizes and plays a "boyo" (wall bounce) sound.
   void playBoyo(double softness) {
-    if (!_canPlay(_lastBoyoMs, _boyoMinIntervalMs)) return;
-    _lastBoyoMs = DateTime.now().millisecondsSinceEpoch;
+    if (!_canTrigger('boyo', 150)) return;
 
     double pct = (softness / 100.0).clamp(0.0, 1.0);
 
@@ -107,13 +270,12 @@ class AudioController {
       vibrato: true, // wobbles!
     );
 
-    _playBytes(wavBytes);
+    _enqueue(() => _playBytesNow(wavBytes));
   }
 
   /// Synthesizes and plays a happy chime on feeding or level up.
   void playChime() {
-    if (!_canPlay(_lastChimeMs, _chimeMinIntervalMs)) return;
-    _lastChimeMs = DateTime.now().millisecondsSinceEpoch;
+    if (!_canTrigger('chime', 220)) return;
 
     // Generate a simple dual-tone chime
     final wavBytes = _generateWav(
@@ -123,12 +285,11 @@ class AudioController {
       softness: 20.0,
       vibrato: false,
     );
-    _playBytes(wavBytes);
+    _enqueue(() => _playBytesNow(wavBytes), highPriority: true);
   }
 
   void playLevelUp() {
-    if (!_canPlay(_lastLevelUpMs, _levelUpMinIntervalMs)) return;
-    _lastLevelUpMs = DateTime.now().millisecondsSinceEpoch;
+    if (!_canTrigger('levelUpSynth', 350)) return;
 
     // Sequence of rising tones
     final wavBytes = _generateWav(
@@ -138,17 +299,64 @@ class AudioController {
       softness: 10.0,
       vibrato: true,
     );
-    _playBytes(wavBytes);
+    _enqueue(() => _playBytesNow(wavBytes), highPriority: true);
   }
 
-  Future<void> _playBytes(Uint8List bytes) async {
-    try {
-      final player = _nextPlayer;
-      await player.play(BytesSource(bytes));
-    } catch (e) {
-      // Fail silently if audio is busy or not supported on this platform/simulator
-      debugPrint("Audio playback error: $e");
+  Uint8List _maybeBoostPcmWav(Uint8List wavBytes, {required double gain}) {
+    if (gain <= 1.0 || wavBytes.length < 44) return wavBytes;
+
+    final bd = ByteData.sublistView(wavBytes);
+
+    bool matchesText(int start, String text) {
+      if (start + text.length > wavBytes.length) return false;
+      for (int i = 0; i < text.length; i++) {
+        if (wavBytes[start + i] != text.codeUnitAt(i)) return false;
+      }
+      return true;
     }
+
+    if (!matchesText(0, 'RIFF') || !matchesText(8, 'WAVE')) {
+      return wavBytes;
+    }
+
+    final int bitsPerSample = bd.getUint16(34, Endian.little);
+    if (bitsPerSample != 8 && bitsPerSample != 16) return wavBytes;
+
+    int dataOffset = -1;
+    int dataSize = 0;
+    int ptr = 12;
+    while (ptr + 8 <= wavBytes.length) {
+      final idBytes = wavBytes.sublist(ptr, ptr + 4);
+      final size = bd.getUint32(ptr + 4, Endian.little);
+      final id = String.fromCharCodes(idBytes);
+      if (id == 'data') {
+        dataOffset = ptr + 8;
+        dataSize = size;
+        break;
+      }
+      ptr += 8 + size;
+      if (size.isOdd) ptr += 1;
+    }
+
+    if (dataOffset < 0 || dataOffset >= wavBytes.length) return wavBytes;
+    final safeDataEnd = min(wavBytes.length, dataOffset + dataSize);
+    final out = Uint8List.fromList(wavBytes);
+
+    if (bitsPerSample == 8) {
+      for (int i = dataOffset; i < safeDataEnd; i++) {
+        final centered = out[i] - 128;
+        final boosted = (centered * gain).round().clamp(-128, 127);
+        out[i] = boosted + 128;
+      }
+      return out;
+    }
+
+    for (int i = dataOffset; i + 1 < safeDataEnd; i += 2) {
+      final s = bd.getInt16(i, Endian.little);
+      final boosted = (s * gain).round().clamp(-32768, 32767);
+      out.buffer.asByteData().setInt16(i, boosted, Endian.little);
+    }
+    return out;
   }
 
   /// WAV file generator (8-bit Mono uncompressed PCM)
@@ -243,8 +451,7 @@ class AudioController {
   double lerp(double a, double b, double t) => a + (b - a) * t;
 
   void dispose() {
-    for (var player in _players) {
-      player.dispose();
-    }
+    _queue.clear();
+    _voicePlayer.dispose();
   }
 }

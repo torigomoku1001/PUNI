@@ -22,7 +22,7 @@ class CreatureState extends ChangeNotifier {
   String _mood = 'normal';
   int _stepsToday = 0;
   double _growthToday = 0.0; // 0.0 to 1.0 (level progress)
-  double _energy = 100.0;     // Puni Energy (0.0 to 100.0)
+  double _energy = 100.0; // Puni Energy (0.0 to 100.0)
 
   // Care interaction stats (growth points contributed by activity)
   double _morningPoints = 0.0;
@@ -67,12 +67,12 @@ class CreatureState extends ChangeNotifier {
   Color get creatureColor {
     // Target colors for care style
     const morningColor = Color(0xFFFF8DA1); // Pink (桃色)
-    const nightColor = Color(0xFFB388FF);   // Purple (紫色)
-    const adColor = Color(0xFF80D8FF);      // Sky Blue (水色)
-    const feedColor = Color(0xFFFFD740);    // Yellow (黄色)
+    const nightColor = Color(0xFFB388FF); // Purple (紫色)
+    const adColor = Color(0xFF80D8FF); // Sky Blue (水色)
+    const feedColor = Color(0xFFFFD740); // Yellow (黄色)
 
     double total = _morningPoints + _nightPoints + _adPoints + _feedPoints;
-    
+
     // Balanced defaults if total is 0 (e.g. at start)
     double pMorning = total == 0 ? 0.25 : _morningPoints / total;
     double pNight = total == 0 ? 0.25 : _nightPoints / total;
@@ -80,9 +80,21 @@ class CreatureState extends ChangeNotifier {
     double pFeed = total == 0 ? 0.25 : _feedPoints / total;
 
     // Blend the RGB values
-    double r = morningColor.red * pMorning + nightColor.red * pNight + adColor.red * pAd + feedColor.red * pFeed;
-    double g = morningColor.green * pMorning + nightColor.green * pNight + adColor.green * pAd + feedColor.green * pFeed;
-    double b = morningColor.blue * pMorning + nightColor.blue * pNight + adColor.blue * pAd + feedColor.blue * pFeed;
+    double r =
+        morningColor.red * pMorning +
+        nightColor.red * pNight +
+        adColor.red * pAd +
+        feedColor.red * pFeed;
+    double g =
+        morningColor.green * pMorning +
+        nightColor.green * pNight +
+        adColor.green * pAd +
+        feedColor.green * pFeed;
+    double b =
+        morningColor.blue * pMorning +
+        nightColor.blue * pNight +
+        adColor.blue * pAd +
+        feedColor.blue * pFeed;
 
     Color trainedColor = Color.fromARGB(255, r.round(), g.round(), b.round());
 
@@ -185,7 +197,11 @@ class CreatureState extends ChangeNotifier {
   }
 
   // Set interaction state
-  void setInteraction({required bool isDragging, required bool isPetting, Offset? touchPosition}) {
+  void setInteraction({
+    required bool isDragging,
+    required bool isPetting,
+    Offset? touchPosition,
+  }) {
     if (isDragging && !_isDragging) {
       if (_energy <= 0.0) {
         _mood = 'sad'; // Out of energy: Surprised/Painful/Sad when grabbed
@@ -209,7 +225,10 @@ class CreatureState extends ChangeNotifier {
   }
 
   // Trigger temporary mood
-  void triggerMood(String newMood, {Duration duration = const Duration(seconds: 4)}) {
+  void triggerMood(
+    String newMood, {
+    Duration duration = const Duration(seconds: 4),
+  }) {
     _moodResetTimer?.cancel();
     _mood = newMood;
     notifyListeners();
@@ -231,14 +250,14 @@ class CreatureState extends ChangeNotifier {
         // No energy, reject experience growth
         return;
       }
-      
+
       // Calculate energy cost. 1.0 growth = 100.0 energy
       double cost = amount * 100.0;
       if (cost > _energy) {
         amount = _energy / 100.0;
         cost = _energy;
       }
-      
+
       _energy -= cost;
       if (_energy < 0.0) _energy = 0.0;
     }
@@ -258,7 +277,7 @@ class CreatureState extends ChangeNotifier {
       if (hour >= 5 && hour < 18) {
         _morningPoints += actualAmount; // Morning: 5am to 6pm
       } else {
-        _nightPoints += actualAmount;   // Night: 6pm to 5am
+        _nightPoints += actualAmount; // Night: 6pm to 5am
       }
     }
 
@@ -273,7 +292,7 @@ class CreatureState extends ChangeNotifier {
   void _levelUp() {
     _level++;
     _growthToday = max(0.0, _growthToday - 1.0);
-    triggerMood('surprised', duration: const Duration(seconds: 3));
+    triggerMood('levelup', duration: const Duration(milliseconds: 100));
     notifyListeners();
     _saveState();
   }
@@ -329,17 +348,36 @@ class CreatureState extends ChangeNotifier {
     _saveState();
   }
 
+  // Add charging duration and convert to energy (+0.5 energy per minute)
+  void addChargingEnergySeconds(double seconds) {
+    if (seconds <= 0.0) return;
+    final next = (_energy + seconds * (0.5 / 60.0)).clamp(0.0, 100.0);
+    if ((next - _energy).abs() < 0.0001) return;
+    _energy = next;
+    notifyListeners();
+    _saveState();
+  }
+
   void _startPoseTimer() {
     _poseTimer?.cancel();
     _poseTimer = Timer.periodic(const Duration(seconds: 7), (timer) {
       if (_isDragging) return; // Don't morph while user is playing with it
-      
+
       // Randomly choose a pose / shape
-      final poses = ['default', 'square', 'round', 'stretch', 'dent', 'star', 'heart', 'triangle'];
+      final poses = [
+        'default',
+        'square',
+        'round',
+        'stretch',
+        'dent',
+        'star',
+        'heart',
+        'triangle',
+      ];
       final nextPose = poses[Random().nextInt(poses.length)];
-      
+
       _shape = nextPose;
-      
+
       // Select an expressive mood matching the pose
       if (nextPose == 'stretch' || nextPose == 'heart') {
         _mood = 'happy';
@@ -350,9 +388,9 @@ class CreatureState extends ChangeNotifier {
       } else {
         _mood = 'normal';
       }
-      
+
       notifyListeners();
-      
+
       // Reset back to default trapezoid and normal mood after 3.2 seconds
       _poseResetTimer?.cancel();
       _poseResetTimer = Timer(const Duration(milliseconds: 3200), () {
