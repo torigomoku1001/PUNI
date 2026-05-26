@@ -124,10 +124,7 @@ class AudioController {
       await _voicePlayer.setAudioContext(_audioContext);
       await _voicePlayer.setVolume(1.0);
       await _voicePlayer.play(BytesSource(bytes));
-      await _voicePlayer.onPlayerComplete.first.timeout(
-        const Duration(seconds: 4),
-        onTimeout: () => null,
-      );
+      await _waitForPlaybackEndOrTimeout();
     } catch (e) {
       debugPrint('Audio route recovery(bytes): $e');
       await _resetPlayer();
@@ -135,11 +132,21 @@ class AudioController {
       await _voicePlayer.setAudioContext(_audioContext);
       await _voicePlayer.setVolume(1.0);
       await _voicePlayer.play(BytesSource(bytes));
-      await _voicePlayer.onPlayerComplete.first.timeout(
-        const Duration(seconds: 4),
-        onTimeout: () => null,
-      );
+      await _waitForPlaybackEndOrTimeout();
     }
+  }
+
+  Future<void> _waitForPlaybackEndOrTimeout() async {
+    // Some Android device/routes can close this stream without emitting a
+    // completion event; treat that as "done" instead of crashing.
+    final completeFuture = _voicePlayer.onPlayerComplete.first
+        .then((_) {})
+        .catchError((_) {});
+
+    await Future.any<void>([
+      completeFuture,
+      Future<void>.delayed(const Duration(seconds: 4)),
+    ]);
   }
 
   Future<void> resetAudioSession() async {
