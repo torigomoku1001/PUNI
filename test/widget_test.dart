@@ -59,6 +59,8 @@ void main() {
   group('Puni Widget Smoke Tests', () {
     testWidgets('App builds and loads home screen successfully', (WidgetTester tester) async {
       await tester.pumpWidget(const MyApp());
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump(const Duration(milliseconds: 500));
       
       // Verify level text HUD exists
       expect(find.textContaining('Lv '), findsOneWidget);

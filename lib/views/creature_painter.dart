@@ -118,6 +118,14 @@ class CreaturePainter extends CustomPainter {
         ..strokeWidth = 3.0
         ..strokeJoin = StrokeJoin.round;
       canvas.drawPath(bodyPath, borderPaint);
+    } else {
+      // Draw a subtle, smooth electric outline to keep the slime's shape defined and aligned
+      final electricOutlinePaint = Paint()
+        ..color = const Color(0xFF8CE3FF).withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(bodyPath, electricOutlinePaint);
     }
 
     // 4. DRAW EYES
@@ -412,13 +420,13 @@ class CreaturePainter extends CustomPainter {
     final ringPaint = Paint()
       ..color = const Color(0xFFCFF4FF).withValues(alpha: 0.78)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.6
+      ..strokeWidth = 3.2
       ..strokeCap = StrokeCap.round;
 
     final sparkPaint = Paint()
       ..color = const Color(0xFFFFFFFF).withValues(alpha: 0.95)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.3
+      ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round;
 
     final glowPaint = Paint()
@@ -434,27 +442,38 @@ class CreaturePainter extends CustomPainter {
     final head2 = (head + nodeCount ~/ 2) % nodeCount;
     const int trailLength = 8;
 
-    Path buildOrbitPath(int movingHead) {
+    Path buildSmoothOrbitPath(int movingHead) {
       final path = Path();
-      final start = center + physics.nodePositions[movingHead];
-      path.moveTo(start.dx, start.dy);
+      
+      final firstIdx = movingHead;
+      final secondIdx = (movingHead + 1) % nodeCount;
+      final firstMid = center + (physics.nodePositions[firstIdx] + physics.nodePositions[secondIdx]) / 2;
+      path.moveTo(firstMid.dx, firstMid.dy);
+
       for (int i = 1; i <= trailLength; i++) {
-        final idx = (movingHead + i) % nodeCount;
-        final p = center + physics.nodePositions[idx];
-        path.lineTo(p.dx, p.dy);
+        final currentIdx = (movingHead + i) % nodeCount;
+        final nextIdx = (movingHead + i + 1) % nodeCount;
+        final current = center + physics.nodePositions[currentIdx];
+        final mid = center + (physics.nodePositions[currentIdx] + physics.nodePositions[nextIdx]) / 2;
+        path.quadraticBezierTo(
+          current.dx,
+          current.dy,
+          mid.dx,
+          mid.dy,
+        );
       }
       return path;
     }
 
-    final orbitPath = buildOrbitPath(head);
-    final orbitPath2 = buildOrbitPath(head2);
+    final orbitPath = buildSmoothOrbitPath(head);
+    final orbitPath2 = buildSmoothOrbitPath(head2);
     final start = center + physics.nodePositions[head];
     final start2 = center + physics.nodePositions[head2];
 
     canvas.drawPath(orbitPath, ringPaint);
     canvas.drawPath(orbitPath2, ringPaint);
 
-    // Add small spark accents near the moving head for a crackling feel.
+    // Add small spark accents near the moving heads that flow parallel along the outline
     final headPoint = start;
     final prevPoint =
         center + physics.nodePositions[(head - 1 + nodeCount) % nodeCount];
@@ -464,31 +483,36 @@ class CreaturePainter extends CustomPainter {
       final unit = dir / len;
       final perp = Offset(-unit.dy, unit.dx);
 
-      // Soft pulsing based on time, deterministic and cheap.
+      // Soft pulsing based on time
       final pulse = 0.7 + 0.3 * sin(tick / 90.0);
-      final sparkLen = 8.0 * pulse;
-      final spread = 5.4;
+      final sparkLen = 14.0 * pulse;
 
-      final a1 = headPoint + perp * spread;
+      // Spark 1: slightly offset outwards, runs along the curve
+      final a1 = headPoint + perp * 3.5;
       final b1 = a1 + unit * sparkLen;
-      final c1 = b1 + perp * (spread * 0.6);
       canvas.drawLine(a1, b1, sparkPaint);
-      canvas.drawLine(b1, c1, sparkPaint);
 
-      final a2 = headPoint - perp * spread;
-      final b2 = a2 + unit * (sparkLen * 0.9);
-      final c2 = b2 - perp * (spread * 0.6);
+      // Spark 2: slightly offset inwards, runs along the curve
+      final a2 = headPoint - perp * 2.5;
+      final b2 = a2 - unit * (sparkLen * 0.85);
       canvas.drawLine(a2, b2, sparkPaint);
-      canvas.drawLine(b2, c2, sparkPaint);
 
-      final a3 = headPoint - unit * (spread * 0.55);
-      final b3 = a3 + perp * (sparkLen * 0.55);
-      final c3 = b3 + unit * (spread * 0.5);
-      canvas.drawLine(a3, b3, sparkPaint);
-      canvas.drawLine(b3, c3, sparkPaint);
+      // Spark 3: near the second head, runs along the curve
+      final headPoint2 = start2;
+      final prevPoint2 =
+          center + physics.nodePositions[(head2 - 1 + nodeCount) % nodeCount];
+      final dir2 = headPoint2 - prevPoint2;
+      final len2 = dir2.distance;
+      if (len2 > 0.001) {
+        final unit2 = dir2 / len2;
+        final perp2 = Offset(-unit2.dy, unit2.dx);
+        final a3 = headPoint2 + perp2 * 3.0;
+        final b3 = a3 + unit2 * (sparkLen * 0.75);
+        canvas.drawLine(a3, b3, sparkPaint);
+      }
 
-      canvas.drawCircle(headPoint, 2.6 * pulse, glowPaint);
-      canvas.drawCircle(start2, 2.1 * pulse, glowPaint);
+      canvas.drawCircle(headPoint, 3.2 * pulse, glowPaint);
+      canvas.drawCircle(start2, 2.7 * pulse, glowPaint);
     }
   }
 

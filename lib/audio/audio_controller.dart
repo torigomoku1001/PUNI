@@ -1,8 +1,10 @@
 import 'dart:collection';
+import 'dart:io';
 import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 class AudioController {
   late AudioPlayer _voicePlayer;
@@ -20,7 +22,12 @@ class AudioController {
       usageType: AndroidUsageType.media,
       audioFocus: AndroidAudioFocus.gain,
     ),
-    iOS: AudioContextIOS(category: AVAudioSessionCategory.ambient, options: {}),
+    iOS: AudioContextIOS(
+      category: AVAudioSessionCategory.playback,
+      options: {
+        AVAudioSessionOptions.mixWithOthers,
+      },
+    ),
   );
 
   // Voice files.
@@ -33,12 +40,8 @@ class AudioController {
   ];
   static const List<String> _idleVoices = [
     'free1.wav',
-    'free2.wav',
-    'free3.wav',
-    'free4.wav',
     'free5.wav',
     'free6.wav',
-    'free7.wav',
   ];
 
   AudioController() {
@@ -118,34 +121,241 @@ class AudioController {
     }
   }
 
+  File? _tempAudioFile;
+
+  Uint8List _applyFadeInOut(Uint8List wavBytes) {
+    if (wavBytes.length < 44) return wavBytes;
+
+    final bd = ByteData.sublistView(wavBytes);
+
+    bool matchesText(int start, String text) {
+      if (start + text.length > wavBytes.length) return false;
+      for (int i = 0; i < text.length; i++) {
+        if (wavBytes[start + i] != text.codeUnitAt(i)) return false;
+      }
+      return true;
+    }
+
+    if (!matchesText(0, 'RIFF') || !matchesText(8, 'WAVE')) {
+      return wavBytes;
+    }
+
+    final int bitsPerSample = bd.getUint16(34, Endian.little);
+    if (bitsPerSample != 8 && bitsPerSample != 16) return wavBytes;
+
+    int dataOffset = -1;
+    int dataSize = 0;
+    int ptr = 12;
+    while (ptr + 8 <= wavBytes.length) {
+      final size = bd.getUint32(ptr + 4, Endian.little);
+      if (ptr + 8 > wavBytes.length) break;
+      final idBytes = wavBytes.sublist(ptr, ptr + 4);
+      final id = String.fromCharCodes(idBytes);
+      if (id == 'data') {
+        dataOffset = ptr + 8;
+        dataSize = size;
+        break;
+      }
+      ptr += 8 + size;
+      if (size.isOdd) ptr += 1;
+    }
+
+    if (dataOffset < 0 || dataOffset >= wavBytes.length) return wavBytes;
+    final safeDataEnd = min(wavBytes.length, dataOffset + dataSize);
+    final out = Uint8List.fromList(wavBytes);
+
+    final int totalSamples = bitsPerSample == 8
+        ? (safeDataEnd - dataOffset)
+        : (safeDataEnd - dataOffset) ~/ 2;
+
+    // Fade out the last 4410 samples (~100ms at 44.1kHz) or 15% of the file, whichever is smaller.
+    final int fadeOutSamples = min(4410, (totalSamples * 0.15).round());
+    // Fade in the first 441 samples (~10ms) or 5% of the file, whichever is smaller.
+    final int fadeInSamples = min(441, (totalSamples * 0.05).round());
+
+    if (bitsPerSample == 8) {
+      // Apply Fade In
+      final int fadeInCount = min(fadeInSamples, totalSamples);
+      for (int i = 0; i < fadeInCount; i++) {
+        final int index = dataOffset + i;
+        final double volume = i / fadeInCount;
+        final int centered = out[index] - 128;
+        final int faded = (centered * volume).round().clamp(-128, 127);
+        out[index] = faded + 128;
+      }
+
+      // Apply Fade Out
+      final int fadeOutCount = min(fadeOutSamples, totalSamples);
+      final int fadeOutStart = safeDataEnd - fadeOutCount;
+      for (int i = 0; i < fadeOutCount; i++) {
+        final int index = fadeOutStart + i;
+        final double volume = 1.0 - (i / fadeOutCount);
+        final int centered = out[index] - 128;
+        final int faded = (centered * volume).round().clamp(-128, 127);
+        out[index] = faded + 128;
+      }
+    } else if (bitsPerSample == 16) {
+      final byteDataOut = out.buffer.asByteData();
+
+      // Apply Fade In
+      final int fadeInCount = min(fadeInSamples, totalSamples);
+      for (int i = 0; i < fadeInCount; i++) {
+        final int byteIndex = dataOffset + i * 2;
+        if (byteIndex + 1 < safeDataEnd) {
+          final double volume = i / fadeInCount;
+          final int s = bd.getInt16(byteIndex, Endian.little);
+          final int faded = (s * volume).round().clamp(-32768, 32767);
+          byteDataOut.setInt16(byteIndex, faded, Endian.little);
+        }
+      }
+
+      // Apply Fade Out
+      final int fadeOutCount = min(fadeOutSamples, totalSamples);
+      final int fadeOutStartSample = totalSamples - fadeOutCount;
+      for (int i = 0; i < fadeOutCount; i++) {
+        final int sampleIndex = fadeOutStartSample + i;
+        final int byteIndex = dataOffset + sampleIndex * 2;
+        if (byteIndex + 1 < safeDataEnd) {
+          final double volume = 1.0 - (i / fadeOutCount);
+          final int s = bd.getInt16(byteIndex, Endian.little);
+          final int faded = (s * volume).round().clamp(-32768, 32767);
+          byteDataOut.setInt16(byteIndex, faded, Endian.little);
+        }
+      }
+    }
+
+    return out;
+  }
+
+  int _getWavDurationMs(Uint8List wavBytes) {
+    if (wavBytes.length < 44) return 0;
+    final bd = ByteData.sublistView(wavBytes);
+
+    bool matchesText(int start, String text) {
+      if (start + text.length > wavBytes.length) return false;
+      for (int i = 0; i < text.length; i++) {
+        if (wavBytes[start + i] != text.codeUnitAt(i)) return false;
+      }
+      return true;
+    }
+
+    if (!matchesText(0, 'RIFF') || !matchesText(8, 'WAVE')) {
+      return 0;
+    }
+
+    final int channels = bd.getUint16(22, Endian.little);
+    final int sampleRate = bd.getUint32(24, Endian.little);
+    final int bitsPerSample = bd.getUint16(34, Endian.little);
+
+    int dataSize = 0;
+    int ptr = 12;
+    while (ptr + 8 <= wavBytes.length) {
+      final size = bd.getUint32(ptr + 4, Endian.little);
+      if (ptr + 8 > wavBytes.length) break;
+      final idBytes = wavBytes.sublist(ptr, ptr + 4);
+      final id = String.fromCharCodes(idBytes);
+      if (id == 'data') {
+        dataSize = size;
+        break;
+      }
+      ptr += 8 + size;
+      if (size.isOdd) ptr += 1;
+    }
+
+    if (dataSize <= 0 || sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) {
+      return 0;
+    }
+
+    final int bytesPerSample = bitsPerSample ~/ 8;
+    final int bytesPerSecond = sampleRate * channels * bytesPerSample;
+    if (bytesPerSecond == 0) return 0;
+
+    return (dataSize * 1000) ~/ bytesPerSecond;
+  }
+
   Future<void> _playBytesNow(Uint8List bytes) async {
+    final int durationMs = _getWavDurationMs(bytes);
     try {
-      await _voicePlayer.stop();
-      await _voicePlayer.setAudioContext(_audioContext);
+      if (_voicePlayer.state == PlayerState.playing) {
+        await _voicePlayer.stop();
+      }
       await _voicePlayer.setVolume(1.0);
-      await _voicePlayer.play(BytesSource(bytes));
-      await _waitForPlaybackEndOrTimeout();
+
+      // Smoothly fade in/out both ends of the audio to prevent pop/click noise
+      final fadedBytes = _applyFadeInOut(bytes);
+
+      Source source;
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        if (_tempAudioFile == null) {
+          final tempDir = await getTemporaryDirectory();
+          _tempAudioFile = File('${tempDir.path}/temp_voice.wav');
+        }
+        await _tempAudioFile!.writeAsBytes(fadedBytes, flush: true);
+        source = DeviceFileSource(_tempAudioFile!.path);
+      } else {
+        source = BytesSource(fadedBytes);
+      }
+
+      await _voicePlayer.play(source);
+      await _waitForPlaybackEndOrTimeout(durationMs);
+
+      // Explicitly stop to avoid hardware/codec standby clicking after playback completes
+      if (_voicePlayer.state == PlayerState.playing) {
+        await _voicePlayer.stop();
+      }
     } catch (e) {
       debugPrint('Audio route recovery(bytes): $e');
       await _resetPlayer();
-      await _voicePlayer.stop();
-      await _voicePlayer.setAudioContext(_audioContext);
-      await _voicePlayer.setVolume(1.0);
-      await _voicePlayer.play(BytesSource(bytes));
-      await _waitForPlaybackEndOrTimeout();
+      try {
+        if (_voicePlayer.state == PlayerState.playing) {
+          await _voicePlayer.stop();
+        }
+        await _voicePlayer.setVolume(1.0);
+
+        final fadedBytes = _applyFadeInOut(bytes);
+
+        Source source;
+        if (defaultTargetPlatform == TargetPlatform.iOS) {
+          if (_tempAudioFile == null) {
+            final tempDir = await getTemporaryDirectory();
+            _tempAudioFile = File('${tempDir.path}/temp_voice.wav');
+          }
+          await _tempAudioFile!.writeAsBytes(fadedBytes, flush: true);
+          source = DeviceFileSource(_tempAudioFile!.path);
+        } else {
+          source = BytesSource(fadedBytes);
+        }
+
+        await _voicePlayer.play(source);
+        await _waitForPlaybackEndOrTimeout(durationMs);
+
+        if (_voicePlayer.state == PlayerState.playing) {
+          await _voicePlayer.stop();
+        }
+      } catch (innerErr) {
+        debugPrint('Failed to play audio in recovery: $innerErr');
+      }
     }
   }
 
-  Future<void> _waitForPlaybackEndOrTimeout() async {
-    // Some Android device/routes can close this stream without emitting a
-    // completion event; treat that as "done" instead of crashing.
+  Future<void> _waitForPlaybackEndOrTimeout(int durationMs) async {
     final completeFuture = _voicePlayer.onPlayerComplete.first
         .then((_) {})
         .catchError((_) {});
 
+    // Enforce a minimum delay of at least 80% of the duration to ignore premature completion events
+    // (which commonly fire in the first 0-100ms on iOS due to platform channel race conditions),
+    // and a maximum delay of duration + 500ms to ensure it completes even if the stream fails.
+    final int minDelayMs = (durationMs * 0.8).round();
+    final int maxDelayMs = durationMs + 500;
+
+    if (minDelayMs > 0) {
+      await Future<void>.delayed(Duration(milliseconds: minDelayMs));
+    }
+
     await Future.any<void>([
       completeFuture,
-      Future<void>.delayed(const Duration(seconds: 4)),
+      Future<void>.delayed(Duration(milliseconds: max(10, maxDelayMs - minDelayMs))),
     ]);
   }
 
@@ -180,22 +390,16 @@ class AudioController {
   }
 
   Future<void> playGrabVoice({required bool hasEnergy}) async {
-    _enqueue(
-      () => _playAssetNow(hasEnergy ? 'pulusdrag.wav' : 'zerodrag.wav'),
-      highPriority: true,
-    );
+    // Grabbing sound removed per design decision.
   }
 
   Future<void> playFlingVoice({required bool hasEnergy}) async {
-    _enqueue(
-      () => _playAssetNow(hasEnergy ? 'plussrrow.wav' : 'iya-.wav'),
-      highPriority: true,
-    );
+    // Flinging sound removed per design decision.
   }
 
   Future<void> playPetEndVoice({required bool hasEnergy}) async {
     _enqueue(
-      () => _playAssetNow(hasEnergy ? 'plusnade.wav' : 'zeronade.wav'),
+      () => _playAssetNow('zeronade.wav'),
       highPriority: true,
     );
   }
@@ -208,11 +412,11 @@ class AudioController {
   }
 
   Future<void> playLevelUpVoice() async {
-    _enqueue(() => _playAssetNow('waho-i.wav'), highPriority: true);
+    _enqueue(() => _playAssetNow('free3.wav'), highPriority: true);
   }
 
   Future<void> playFeedVoice() async {
-    _enqueue(() => _playAssetNow('food.wav'), highPriority: true);
+    _enqueue(() => _playAssetNow('free3.wav'), highPriority: true);
   }
 
   /// Synthesizes and plays a "puni" (squishy squeeze) sound.

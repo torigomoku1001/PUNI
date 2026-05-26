@@ -7,6 +7,13 @@ import 'views/home_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await MobileAds.instance.initialize();
+  await MobileAds.instance.updateRequestConfiguration(
+    RequestConfiguration(
+      testDeviceIds: [
+        'c814d17495795ad8f4fa4aa01653b899', // おれのあいふぉん (iOS)
+      ],
+    ),
+  );
 
   // Set system UI overlay style for seamless full-screen experience
   SystemChrome.setSystemUIOverlayStyle(

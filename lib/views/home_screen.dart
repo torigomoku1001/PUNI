@@ -422,7 +422,20 @@ class _HomeScreenState extends State<HomeScreen>
     final ad = _interstitialAd;
 
     if (ad == null) {
+      debugPrint("Interstitial ad was null when level up clicked. Loading a new one.");
       _loadInterstitialAd();
+      
+      // Inform user via SnackBar that the ad is still loading, but reward them as a fallback
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "広告の準備ができていません。再読み込み中ですが、今回はスキップしてレベルアップします。",
+            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 3),
+        ),
+      );
       _grantAdLevelUpResult();
       return;
     }
@@ -431,12 +444,14 @@ class _HomeScreenState extends State<HomeScreen>
     _interstitialAd = null;
     ad.fullScreenContentCallback = FullScreenContentCallback(
       onAdDismissedFullScreenContent: (ad) {
+        debugPrint("Interstitial ad dismissed.");
         ad.dispose();
         _isShowingInterstitialAd = false;
         _grantAdLevelUpResult();
         _loadInterstitialAd();
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
+        debugPrint("Interstitial ad failed to show: $error");
         ad.dispose();
         _isShowingInterstitialAd = false;
         _grantAdLevelUpResult();
@@ -463,6 +478,7 @@ class _HomeScreenState extends State<HomeScreen>
       size: AdSize.banner,
       listener: BannerAdListener(
         onAdLoaded: (ad) {
+          debugPrint("BannerAd loaded successfully.");
           if (!mounted) {
             ad.dispose();
             return;
@@ -473,6 +489,7 @@ class _HomeScreenState extends State<HomeScreen>
           });
         },
         onAdFailedToLoad: (ad, error) {
+          debugPrint("BannerAd failed to load: $error");
           ad.dispose();
           if (!mounted) return;
           setState(() {
@@ -492,9 +509,11 @@ class _HomeScreenState extends State<HomeScreen>
       request: const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) {
+          debugPrint("InterstitialAd loaded successfully.");
           _interstitialAd = ad;
         },
         onAdFailedToLoad: (error) {
+          debugPrint("InterstitialAd failed to load: $error");
           _interstitialAd = null;
         },
       ),
@@ -1159,51 +1178,58 @@ class _HomeScreenState extends State<HomeScreen>
                             color: textThemeColor.withOpacity(0.7),
                           ),
                         ),
-                        Row(
-                          children: [1, 25, 50, 75, 100].map((lv) {
-                            final isCurrent = _state.level == lv;
-                            return Padding(
-                              padding: const EdgeInsets.only(left: 4),
-                              child: InkWell(
-                                onTap: () => _state.debugSetLevel(lv),
-                                borderRadius: BorderRadius.circular(12),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: isCurrent
-                                        ? _primaryColor
-                                        : (textThemeColor == Colors.white
-                                              ? Colors.white.withOpacity(0.1)
-                                              : Colors.black.withOpacity(0.05)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            child: Row(
+                              children: [1, 25, 50, 75, 100].map((lv) {
+                                final isCurrent = _state.level == lv;
+                                return Padding(
+                                  padding: const EdgeInsets.only(left: 4),
+                                  child: InkWell(
+                                    onTap: () => _state.debugSetLevel(lv),
                                     borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: isCurrent
-                                          ? Colors.transparent
-                                          : (textThemeColor == Colors.white
-                                                ? Colors.white.withOpacity(0.1)
-                                                : Colors.black.withOpacity(
-                                                    0.1,
-                                                  )),
-                                      width: 1,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: isCurrent
+                                            ? _primaryColor
+                                            : (textThemeColor == Colors.white
+                                                  ? Colors.white.withOpacity(0.1)
+                                                  : Colors.black.withOpacity(0.05)),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: isCurrent
+                                              ? Colors.transparent
+                                              : (textThemeColor == Colors.white
+                                                    ? Colors.white.withOpacity(0.1)
+                                                    : Colors.black.withOpacity(
+                                                        0.1,
+                                                      )),
+                                          width: 1,
+                                          ),
+                                        ),
+                                      child: Text(
+                                        "Lv$lv",
+                                        style: GoogleFonts.outfit(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: isCurrent
+                                              ? Colors.white
+                                              : textThemeColor,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                  child: Text(
-                                    "Lv$lv",
-                                    style: GoogleFonts.outfit(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: isCurrent
-                                          ? Colors.white
-                                          : textThemeColor,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          }).toList(),
+                                );
+                              }).toList(),
+                            ),
+                          ),
                         ),
                       ],
                     ),
