@@ -13,8 +13,6 @@ class PuniPhysics {
   List<Offset> nodePositions = [];
   List<Offset> nodeVelocities = [];
 
-
-
   PuniPhysics() {
     _initializeNodes();
   }
@@ -32,7 +30,7 @@ class PuniPhysics {
     return List.generate(nodeCount, (i) {
       double angle = i * 2 * pi / nodeCount;
       Offset offset;
-      
+
       switch (shape) {
         case 'square':
           // Map circle to rounded square
@@ -49,7 +47,10 @@ class PuniPhysics {
 
         case 'stretch':
           // Tall stretch (背伸ばし)
-          offset = Offset(cos(angle) * radius * 0.65, sin(angle) * radius * 1.55);
+          offset = Offset(
+            cos(angle) * radius * 0.65,
+            sin(angle) * radius * 1.55,
+          );
           break;
 
         case 'round':
@@ -68,7 +69,9 @@ class PuniPhysics {
         case 'triangle':
           // Flat bottom, pointed top (三角・ピラミッド形)
           double x = cos(angle);
-          double y = sin(angle); // Flutter Y is down (top is negative, bottom is positive)
+          double y = sin(
+            angle,
+          ); // Flutter Y is down (top is negative, bottom is positive)
           double tx = x * radius * 0.95 * (1.0 + y);
           double ty = y * radius * 0.85;
           if (y > 0.0) {
@@ -113,15 +116,20 @@ class PuniPhysics {
           //  ------------
           double x = cos(angle);
           double y = sin(angle);
-          double widthFactor = 1.0 + y * 0.35; // wider at bottom, narrower at top
+          double widthFactor =
+              1.0 + y * 0.35; // wider at bottom, narrower at top
           double tx = x * radius * 1.15 * widthFactor;
           double ty = y * radius * 0.85;
-          
+
           if (y > 0.1) {
-            ty = ty * 0.25 + (radius * 0.85) * 0.75; // Flatten the bottom line cleanly
+            ty =
+                ty * 0.25 +
+                (radius * 0.85) * 0.75; // Flatten the bottom line cleanly
           }
           if (y < -0.1) {
-            ty = ty * 0.45 - (radius * 0.6) * 0.55; // Flatten the top line cleanly
+            ty =
+                ty * 0.45 -
+                (radius * 0.6) * 0.55; // Flatten the top line cleanly
           }
           offset = Offset(tx, ty);
           break;
@@ -162,8 +170,6 @@ class PuniPhysics {
     if (dt <= 0.0) return;
     if (dt > 0.03) dt = 0.016; // Cap at ~60fps to prevent instability
 
-
-
     // Define physics parameters based on softness
     // Softness scale: 0.0 (stiff/elastic) -> 100.0 (soft/watery)
     double softnessPct = (softness / 100.0).clamp(0.0, 1.0);
@@ -171,7 +177,8 @@ class PuniPhysics {
     // Spring constants: how fast it snaps back to target shape
     // Non-linear power scale: extremely stiff at Lv 1 (1180+), and incredibly soft/watery at Lv 100 (10.5)
     double springCenter = 1200.0 * pow(1.0 - softnessPct, 1.8).toDouble() + 5.0;
-    double springNeighbors = 900.0 * pow(1.0 - softnessPct, 1.8).toDouble() + 3.0;
+    double springNeighbors =
+        900.0 * pow(1.0 - softnessPct, 1.8).toDouble() + 3.0;
 
     // Damping: energy loss (viscosity)
     // Low damping at high softness allows for beautiful, persistent wobbles and jiggles!
@@ -186,7 +193,10 @@ class PuniPhysics {
     final double leftWall = margin;
     final double rightWall = boundary.width - margin;
     final double ceilingY = margin + 40.0; // Margin + HUD space
-    final double floorY = boundary.height - margin - 190.0; // Raised bottom margin to clear menu bar (height - 210.0)
+    final double floorY =
+        boundary.height -
+        margin -
+        190.0; // Raised bottom margin to clear menu bar (height - 210.0)
 
     // Allow the center of mass to go closer to the walls at high softness
     // At Lv 1 (softness 1%): center limit is nearly 100% of baseRadius away (no squish)
@@ -208,7 +218,12 @@ class PuniPhysics {
       );
 
       Offset dragForce = (targetCenter - center) * 15.0; // Strong drag pull
-      centerVelocity = dragForce;
+      centerVelocity = Offset.lerp(centerVelocity, dragForce, 0.35)!;
+      final dragSpeed = centerVelocity.distance;
+      const maxDragSpeed = 900.0;
+      if (dragSpeed > maxDragSpeed) {
+        centerVelocity = (centerVelocity / dragSpeed) * maxDragSpeed;
+      }
       center += centerVelocity * dt;
     } else {
       // Free falling/sliding
@@ -220,17 +235,29 @@ class PuniPhysics {
     // Bounce center from boundaries to prevent escaping
     if (center.dy > bottom) {
       center = Offset(center.dx, bottom);
-      centerVelocity = Offset(centerVelocity.dx * 0.8, -centerVelocity.dy.abs() * 0.5);
+      centerVelocity = Offset(
+        centerVelocity.dx * 0.8,
+        -centerVelocity.dy.abs() * 0.5,
+      );
     } else if (center.dy < top) {
       center = Offset(center.dx, top);
-      centerVelocity = Offset(centerVelocity.dx * 0.8, centerVelocity.dy.abs() * 0.5);
+      centerVelocity = Offset(
+        centerVelocity.dx * 0.8,
+        centerVelocity.dy.abs() * 0.5,
+      );
     }
     if (center.dx < left) {
       center = Offset(left, center.dy);
-      centerVelocity = Offset(centerVelocity.dx.abs() * 0.5, centerVelocity.dy * 0.8);
+      centerVelocity = Offset(
+        centerVelocity.dx.abs() * 0.5,
+        centerVelocity.dy * 0.8,
+      );
     } else if (center.dx > right) {
       center = Offset(right, center.dy);
-      centerVelocity = Offset(-centerVelocity.dx.abs() * 0.5, centerVelocity.dy * 0.8);
+      centerVelocity = Offset(
+        -centerVelocity.dx.abs() * 0.5,
+        centerVelocity.dy * 0.8,
+      );
     }
 
     // 2. CALC TARGET SHAPE OFFSETS
@@ -242,16 +269,19 @@ class PuniPhysics {
       double dragDistance = dragVec.distance;
       if (dragDistance > 8.0) {
         Offset dragDir = dragVec / dragDistance;
-        double stretchFactor = (dragDistance / baseRadius).clamp(0.0, 1.35);
-        double scaleParallel = 1.0 + stretchFactor * 0.85; // Stretch up to 2.15x
-        double scalePerpendicular = 1.0 / sqrt(scaleParallel); // Compress to preserve 2D area
-        
+        double stretchFactor = (dragDistance / baseRadius).clamp(0.0, 0.8);
+        double scaleParallel =
+            1.0 + stretchFactor * 0.55; // Stretch up to 1.44x
+        double scalePerpendicular =
+            1.0 / sqrt(scaleParallel); // Compress to preserve 2D area
+
         for (int i = 0; i < nodeCount; i++) {
           Offset baseOffset = targetOffsets[i];
           double dot = baseOffset.dx * dragDir.dx + baseOffset.dy * dragDir.dy;
           Offset parallelPart = dragDir * dot;
           Offset perpPart = baseOffset - parallelPart;
-          targetOffsets[i] = parallelPart * scaleParallel + perpPart * scalePerpendicular;
+          targetOffsets[i] =
+              parallelPart * scaleParallel + perpPart * scalePerpendicular;
         }
       }
     }
@@ -287,18 +317,27 @@ class PuniPhysics {
       Offset nextPos = nodePositions[(i + 1) % nodeCount];
       Offset prevPos = nodePositions[(i - 1 + nodeCount) % nodeCount];
 
-      double targetNeighborDist = (targetOffsets[(i + 1) % nodeCount] - targetOffset).distance;
+      double targetNeighborDist =
+          (targetOffsets[(i + 1) % nodeCount] - targetOffset).distance;
       Offset toNext = nextPos - pos;
       double nextDist = toNext.distance;
       if (nextDist > 0.001) {
-        nodeForces[i] += (toNext / nextDist) * (nextDist - targetNeighborDist) * springNeighbors;
+        nodeForces[i] +=
+            (toNext / nextDist) *
+            (nextDist - targetNeighborDist) *
+            springNeighbors;
       }
 
-      double targetPrevNeighborDist = (targetOffsets[(i - 1 + nodeCount) % nodeCount] - targetOffset).distance;
+      double targetPrevNeighborDist =
+          (targetOffsets[(i - 1 + nodeCount) % nodeCount] - targetOffset)
+              .distance;
       Offset toPrev = prevPos - pos;
       double prevDist = toPrev.distance;
       if (prevDist > 0.001) {
-        nodeForces[i] += (toPrev / prevDist) * (prevDist - targetPrevNeighborDist) * springNeighbors;
+        nodeForces[i] +=
+            (toPrev / prevDist) *
+            (prevDist - targetPrevNeighborDist) *
+            springNeighbors;
       }
 
       // Force 3: Volume / Pressure Force (points radially outward in target direction to prevent inversion flips)
@@ -318,7 +357,10 @@ class PuniPhysics {
           double pushDist = pushDir.distance;
           if (pushDist > 0.1) {
             // High frequency rippling vibration force
-            double rippleForce = (1.0 - (pushDist / 100.0)) * 600.0 * sin(pos.dx * 0.15 + pos.dy * 0.15);
+            double rippleForce =
+                (1.0 - (pushDist / 100.0)) *
+                600.0 *
+                sin(pos.dx * 0.15 + pos.dy * 0.15);
             nodeForces[i] += (pushDir / pushDist) * rippleForce;
           }
         }
@@ -337,10 +379,10 @@ class PuniPhysics {
     for (int i = 0; i < nodeCount; i++) {
       // Update velocities
       nodeVelocities[i] += nodeForces[i] * dt;
-      
+
       // Node gravity is added if not dragging center (inertia lag)
       if (!isDragging) {
-        nodeVelocities[i] += gravityVector * 0.2 * dt; 
+        nodeVelocities[i] += gravityVector * 0.2 * dt;
       }
 
       // Apply damping
@@ -359,15 +401,27 @@ class PuniPhysics {
       // RIGIDITY AND TARGET SHAPE ENFORCEMENT BASED ON LEVEL/SOFTNESS
       double rigidityFactor = pow(1.0 - softnessPct, 3.2).toDouble();
       Offset targetOffset = targetOffsets[i];
-      nodePositions[i] = Offset.lerp(nodePositions[i], targetOffset, rigidityFactor * 0.95)!;
-      nodeVelocities[i] = Offset.lerp(nodeVelocities[i], Offset.zero, rigidityFactor * 0.95)!;
+      nodePositions[i] = Offset.lerp(
+        nodePositions[i],
+        targetOffset,
+        rigidityFactor * 0.95,
+      )!;
+      nodeVelocities[i] = Offset.lerp(
+        nodeVelocities[i],
+        Offset.zero,
+        rigidityFactor * 0.95,
+      )!;
 
       // Keep nodes within a safe physical distance from center to prevent collapse/explosion
       double distFromCenter = nodePositions[i].distance;
       if (distFromCenter < 6.0) {
-        nodePositions[i] = (nodePositions[i] / (distFromCenter > 0.01 ? distFromCenter : 1.0)) * 6.0;
+        nodePositions[i] =
+            (nodePositions[i] /
+                (distFromCenter > 0.01 ? distFromCenter : 1.0)) *
+            6.0;
       } else if (distFromCenter > baseRadius * 2.2) {
-        nodePositions[i] = (nodePositions[i] / distFromCenter) * (baseRadius * 2.2);
+        nodePositions[i] =
+            (nodePositions[i] / distFromCenter) * (baseRadius * 2.2);
       }
 
       // Wall collision for absolute node positions using the exact physical wall boundaries:
@@ -379,14 +433,20 @@ class PuniPhysics {
 
       if (absPos.dy > floorY) {
         double overlap = absPos.dy - floorY;
-        nodePositions[i] = Offset(nodePositions[i].dx, nodePositions[i].dy - overlap);
+        nodePositions[i] = Offset(
+          nodePositions[i].dx,
+          nodePositions[i].dy - overlap,
+        );
         // Bounce and slow down sliding
         double vY = -nodeVelocities[i].dy.abs() * nodeBounce;
         double vX = nodeVelocities[i].dx * slideDamp;
         nodeVelocities[i] = Offset(vX, vY);
       } else if (absPos.dy < ceilingY) {
         double overlap = ceilingY - absPos.dy;
-        nodePositions[i] = Offset(nodePositions[i].dx, nodePositions[i].dy + overlap);
+        nodePositions[i] = Offset(
+          nodePositions[i].dx,
+          nodePositions[i].dy + overlap,
+        );
         double vY = nodeVelocities[i].dy.abs() * nodeBounce;
         double vX = nodeVelocities[i].dx * slideDamp;
         nodeVelocities[i] = Offset(vX, vY);
@@ -394,13 +454,19 @@ class PuniPhysics {
 
       if (absPos.dx < leftWall) {
         double overlap = leftWall - absPos.dx;
-        nodePositions[i] = Offset(nodePositions[i].dx + overlap, nodePositions[i].dy);
+        nodePositions[i] = Offset(
+          nodePositions[i].dx + overlap,
+          nodePositions[i].dy,
+        );
         double vX = nodeVelocities[i].dx.abs() * nodeBounce;
         double vY = nodeVelocities[i].dy * slideDamp;
         nodeVelocities[i] = Offset(vX, vY);
       } else if (absPos.dx > rightWall) {
         double overlap = absPos.dx - rightWall;
-        nodePositions[i] = Offset(nodePositions[i].dx - overlap, nodePositions[i].dy);
+        nodePositions[i] = Offset(
+          nodePositions[i].dx - overlap,
+          nodePositions[i].dy,
+        );
         double vX = -nodeVelocities[i].dx.abs() * nodeBounce;
         double vY = nodeVelocities[i].dy * slideDamp;
         nodeVelocities[i] = Offset(vX, vY);

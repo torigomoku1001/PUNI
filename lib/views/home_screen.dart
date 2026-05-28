@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:health/health.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../physics/puni_physics.dart';
@@ -32,6 +37,17 @@ class FoodBubble {
   }
 }
 
+class _HealthFetchResult {
+  final int? value;
+  final String? errorMessage;
+
+  const _HealthFetchResult.success(this.value) : errorMessage = null;
+
+  const _HealthFetchResult.failure(this.errorMessage) : value = null;
+
+  bool get isSuccess => value != null && errorMessage == null;
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -40,7 +56,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final PuniPhysics _physics;
   late final CreatureState _state;
   late final AudioController _audioController;
@@ -52,8 +68,10 @@ class _HomeScreenState extends State<HomeScreen>
   // Interactive gravity & Pedometer
   Offset _gravity = const Offset(0, 480);
   StreamSubscription? _accelerometerSub;
-  double _prevMagnitude = 9.8;
-  DateTime _lastStepTime = DateTime.now();
+  final Health _health = Health();
+  static const MethodChannel _healthConnectChannel = MethodChannel(
+    'puni/health_connect',
+  );
 
   // Battery monitoring for charging state
   final Battery _battery = Battery();
@@ -74,6 +92,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   // Food bubbles
   final List<FoodBubble> _foodBubbles = [];
+  DateTime? _lastEatAt;
 
   // Puni Colors (Peach / Rose base)
   Color _primaryColor = const Color(0xFFD2D2D8);
@@ -88,6 +107,10 @@ class _HomeScreenState extends State<HomeScreen>
   bool _isBannerAdReady = false;
   InterstitialAd? _interstitialAd;
   bool _isShowingInterstitialAd = false;
+  bool _isHealthSyncing = false;
+  bool? _lastHealthSyncSucceeded;
+  bool _lastHealthSyncPermissionDenied = false;
+  bool _pendingHealthSyncOnResume = false;
 
   String get _bannerAdUnitId {
     switch (defaultTargetPlatform) {
@@ -110,6 +133,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _physics = PuniPhysics();
     _state = CreatureState();
     _audioController = AudioController();
@@ -125,31 +149,9 @@ class _HomeScreenState extends State<HomeScreen>
     )..addListener(_tickPhysics);
     _gameLoopController.repeat();
 
-    // 1. Pedometer & Tilt Gravity (Pure-Dart Accelerometer)
+    // 1. Tilt Gravity from accelerometer
     _accelerometerSub = accelerometerEventStream().listen(
       (AccelerometerEvent event) {
-        // Step counter peak detection
-        double magnitude = sqrt(
-          event.x * event.x + event.y * event.y + event.z * event.z,
-        );
-        if (magnitude > 12.2 && _prevMagnitude <= 12.2) {
-          DateTime now = DateTime.now();
-          if (now.difference(_lastStepTime).inMilliseconds > 360) {
-            _state.addSteps(1);
-            _lastStepTime = now;
-
-            // Downward squash impulse upon stepping
-            for (int i = 0; i < PuniPhysics.nodeCount; i++) {
-              double angle = i * 2 * pi / PuniPhysics.nodeCount;
-              _physics.nodeVelocities[i] += Offset(
-                cos(angle) * 35.0,
-                sin(angle) * 75.0 + 35.0,
-              );
-            }
-          }
-        }
-        _prevMagnitude = magnitude;
-
         // Tilt gravity computation
         double targetGx = -event.x * 65.0;
         // Y（落下速度）は常に立てた時の固定値に保つ
@@ -186,6 +188,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _audioController.playStartupVoice();
+      // Auto-sync step data on startup
+      _autoSyncHealthData();
     });
   }
 
@@ -292,16 +296,24 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _eatFood() {
+    final now = DateTime.now();
+    if (_lastEatAt != null &&
+        now.difference(_lastEatAt!).inMilliseconds < 140) {
+      return;
+    }
+    _lastEatAt = now;
+
     _audioController.playFeedVoice();
     _state.triggerMood('eating', duration: const Duration(seconds: 2));
     _state.addGrowth(0.12, source: 'feed'); // Growth from eating
 
     // Push boundary nodes outward wobbly
+    final impulse = _state.isDragging ? 180.0 : 260.0;
     for (int i = 0; i < PuniPhysics.nodeCount; i++) {
       double angle = i * 2 * pi / PuniPhysics.nodeCount;
       _physics.nodeVelocities[i] += Offset(
-        cos(angle) * 300.0,
-        sin(angle) * 300.0,
+        cos(angle) * impulse,
+        sin(angle) * impulse,
       );
     }
   }
@@ -404,6 +416,22 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _spawnFood() {
+    final consumed = _state.consumeFeedAction();
+    if (!consumed) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'ご飯は1日${CreatureState.maxFeedPerDay}回までです。',
+            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: CupertinoColors.systemRed,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     final mediaSize = MediaQuery.of(context).size;
     final randomX = 40.0 + Random().nextDouble() * (mediaSize.width - 80.0);
     setState(() {
@@ -419,12 +447,31 @@ class _HomeScreenState extends State<HomeScreen>
   // Watch interstitial ad to Level Up
   void _watchAdToLevelUp() {
     if (_isShowingInterstitialAd) return;
+
+    final consumed = _state.consumeAdLevelUpAction();
+    if (!consumed) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '動画でLvUPは1日${CreatureState.maxAdLevelUpPerDay}回までです。',
+            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: CupertinoColors.systemRed,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     final ad = _interstitialAd;
 
     if (ad == null) {
-      debugPrint("Interstitial ad was null when level up clicked. Loading a new one.");
+      debugPrint(
+        "Interstitial ad was null when level up clicked. Loading a new one.",
+      );
       _loadInterstitialAd();
-      
+
       // Inform user via SnackBar that the ad is still loading, but reward them as a fallback
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -520,328 +567,463 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  void _showAppleHealthSyncDialog() {
-    DateTime bedtime = DateTime.now().subtract(
-      const Duration(hours: 8),
-    ); // Default 8 hours bedtime
-    DateTime wakeTime = DateTime.now();
-    double sleepHours = 8.0;
-
-    showCupertinoModalPopup(
+  void _showEnergyRecoveryGuideDialog() {
+    showCupertinoDialog(
       context: context,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            // Recalculate sleep duration
-            Duration diff = wakeTime.difference(bedtime);
-            double calculatedHours = diff.inMinutes / 60.0;
-            if (calculatedHours < 0) {
-              calculatedHours += 24.0; // handle cross-midnight
-            }
-            sleepHours = double.parse(calculatedHours.toStringAsFixed(1));
-
-            return Container(
-              height: 480,
-              padding: const EdgeInsets.only(top: 6.0),
-              color: CupertinoColors.systemBackground.resolveFrom(context),
-              child: SafeArea(
-                top: false,
-                child: Column(
-                  children: [
-                    // Pull bar
-                    Container(
-                      height: 5,
-                      width: 40,
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.inactiveGray,
-                        borderRadius: BorderRadius.circular(2.5),
-                      ),
+      builder: (ctx) {
+        return CupertinoTheme(
+          data: const CupertinoThemeData(brightness: Brightness.light),
+          child: CupertinoAlertDialog(
+            title: Text(
+              'PUNIの説明',
+              style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+            ),
+            content: Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'エネルギー回復',
+                    style: GoogleFonts.notoSansJp(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                     ),
-                    const SizedBox(height: 12),
-                    // Title
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          CupertinoIcons.heart_fill,
-                          color: Color(0xFFFF2D55),
-                          size: 22,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          "Apple Health 同期",
-                          style: GoogleFonts.notoSansJp(
-                            fontSize: 19,
-                            fontWeight: FontWeight.bold,
-                            color: CupertinoColors.label.resolveFrom(context),
-                          ),
-                        ),
-                      ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '・散歩: 今日 0:00-23:59 の歩数を同期\n  1歩ごとに +0.02',
+                    style: GoogleFonts.notoSansJp(fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '・充電: 1分ごとに +0.5',
+                    style: GoogleFonts.notoSansJp(fontSize: 13),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '※ ぷにエネルギーの上限は 100 です。',
+                    style: GoogleFonts.notoSansJp(
+                      fontSize: 12,
+                      color: CupertinoColors.systemGrey,
                     ),
-                    const SizedBox(height: 20),
-                    // Steps status
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 20),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.secondarySystemBackground
-                            .resolveFrom(context),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                "今日の歩数同期",
-                                style: GoogleFonts.notoSansJp(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  color: CupertinoColors.label.resolveFrom(
-                                    context,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                "ヘルスケア歩数: ${_state.stepsToday} 歩",
-                                style: GoogleFonts.notoSansJp(
-                                  fontSize: 12,
-                                  color: CupertinoColors.secondaryLabel
-                                      .resolveFrom(context),
-                                ),
-                              ),
-                            ],
-                          ),
-                          Text(
-                            "+${(_state.stepsToday * 0.02).toStringAsFixed(1)} ⚡️",
-                            style: GoogleFonts.outfit(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: CupertinoColors.activeGreen,
-                            ),
-                          ),
-                        ],
-                      ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '回復したエネルギーの使い道',
+                    style: GoogleFonts.notoSansJp(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                     ),
-                    const SizedBox(height: 16),
-                    // Sleep selection heading
-                    Text(
-                      "昨夜の睡眠時間を選択して同期:",
-                      style: GoogleFonts.notoSansJp(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: CupertinoColors.label.resolveFrom(context),
-                      ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '・エネルギーを使ってPUNIと触れ合うと成長してレベルが上がります。',
+                    style: GoogleFonts.notoSansJp(fontSize: 13),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    '色の育ち方',
+                    style: GoogleFonts.notoSansJp(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                     ),
-                    const SizedBox(height: 10),
-                    // Time pickers
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        Column(
-                          children: [
-                            Text(
-                              "就寝時刻",
-                              style: GoogleFonts.notoSansJp(
-                                fontSize: 11,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                            ),
-                            SizedBox(
-                              width: 140,
-                              height: 100,
-                              child: CupertinoDatePicker(
-                                mode: CupertinoDatePickerMode.time,
-                                initialDateTime: bedtime,
-                                use24hFormat: true,
-                                onDateTimeChanged: (DateTime newDateTime) {
-                                  setModalState(() {
-                                    bedtime = newDateTime;
-                                  });
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                        Column(
-                          children: [
-                            Text(
-                              "起床時刻",
-                              style: GoogleFonts.notoSansJp(
-                                fontSize: 11,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                            ),
-                            SizedBox(
-                              width: 140,
-                              height: 100,
-                              child: CupertinoDatePicker(
-                                mode: CupertinoDatePickerMode.time,
-                                initialDateTime: wakeTime,
-                                use24hFormat: true,
-                                onDateTimeChanged: (DateTime newDateTime) {
-                                  setModalState(() {
-                                    wakeTime = newDateTime;
-                                  });
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      "睡眠時間: $sleepHours 時間 (エネルギー: +${(sleepHours * 10.0).toStringAsFixed(0)} ⚡️)",
-                      style: GoogleFonts.notoSansJp(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFFFF2D55),
-                      ),
-                    ),
-                    const Spacer(),
-                    // Action button
-                    Padding(
-                      padding: const EdgeInsets.only(
-                        left: 20,
-                        right: 20,
-                        bottom: 20,
-                      ),
-                      child: CupertinoButton(
-                        color: const Color(0xFFFF2D55),
-                        borderRadius: BorderRadius.circular(16),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(
-                              CupertinoIcons.heart_fill,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              "Apple Health 睡眠データを同期",
-                              style: GoogleFonts.notoSansJp(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        onPressed: () {
-                          // Show Apple Health style syncing indicator dialog
-                          showCupertinoDialog(
-                            context: context,
-                            builder: (loaderCtx) {
-                              Future.delayed(
-                                const Duration(milliseconds: 1400),
-                                () {
-                                  if (!mounted) return;
-                                  Navigator.pop(loaderCtx); // Dismiss loader
-                                  Navigator.pop(context); // Dismiss sheet
-
-                                  // Award sleep energy to state
-                                  _state.addSleepEnergy(sleepHours);
-                                  _audioController.playChime();
-                                  _state.triggerMood(
-                                    'happy',
-                                    duration: const Duration(seconds: 3),
-                                  );
-
-                                  ScaffoldMessenger.of(
-                                    this.context,
-                                  ).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        "睡眠データを同期しました！エネルギー +${(sleepHours * 10.0).toStringAsFixed(0)} ⚡️",
-                                        style: GoogleFonts.notoSansJp(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      backgroundColor:
-                                          CupertinoColors.activeGreen,
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                },
-                              );
-
-                              return const CupertinoAlertDialog(
-                                title: Text("ヘルスケア同期"),
-                                content: Padding(
-                                  padding: EdgeInsets.only(top: 16.0),
-                                  child: CupertinoActivityIndicator(radius: 14),
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '・ご飯・なでる・遊ぶ・動画LvUPのバランスで色が少しずつ変わります。\n  好みの色を目標に、いつものお世話の配分を調整して育ててみてください。',
+                    style: GoogleFonts.notoSansJp(fontSize: 13),
+                  ),
+                  const SizedBox(height: 10),
+                  _buildInfoColorRow(
+                    color: const Color(0xFFFFD740),
+                    label: 'ご飯',
+                    description: '黄色寄り',
+                  ),
+                  const SizedBox(height: 6),
+                  _buildInfoColorRow(
+                    color: const Color(0xFFFF8DA1),
+                    label: 'なでる',
+                    description: 'ピンク寄り',
+                  ),
+                  const SizedBox(height: 6),
+                  _buildInfoColorRow(
+                    color: const Color(0xFFB388FF),
+                    label: '投げる・つまんで遊ぶ',
+                    description: '紫寄り',
+                  ),
+                  const SizedBox(height: 6),
+                  _buildInfoColorRow(
+                    color: const Color(0xFF80D8FF),
+                    label: '動画LvUP',
+                    description: '水色寄り',
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              CupertinoDialogAction(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: Text(
+                  'とじる',
+                  style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
                 ),
               ),
-            );
-          },
+            ],
+          ),
         );
       },
     );
   }
 
-  void _showEnergyRecoveryGuideDialog() {
-    showCupertinoDialog(
+  Widget _buildInfoColorRow({
+    required Color color,
+    required String label,
+    required String description,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '$label: $description',
+            style: GoogleFonts.notoSansJp(fontSize: 12.5),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String get _healthServiceLabel {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.iOS:
+        return 'ヘルスケア';
+      case TargetPlatform.android:
+        return 'Health Connect';
+      default:
+        return 'ヘルスデータ';
+    }
+  }
+
+  Future<bool> _hasHealthReadPermissionNow() async {
+    try {
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        return false;
+      }
+
+      await _health.configure();
+
+      if (Platform.isAndroid) {
+        final permission = await Permission.activityRecognition.status;
+        if (!permission.isGranted) {
+          return false;
+        }
+      }
+
+      final hasGranted = await _health.hasPermissions(
+        [HealthDataType.STEPS],
+        permissions: const [HealthDataAccess.READ],
+      );
+      return hasGranted == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _refreshHealthPermissionDeniedFlag() async {
+    if (!_lastHealthSyncPermissionDenied) return;
+    final hasPermissionNow = await _hasHealthReadPermissionNow();
+    if (!mounted) return;
+    if (hasPermissionNow) {
+      setState(() {
+        _lastHealthSyncPermissionDenied = false;
+      });
+    }
+  }
+
+  Future<bool> _requestActivityRecognitionPermission() async {
+    if (!Platform.isAndroid) return true;
+    final permission = await Permission.activityRecognition.request();
+    return permission.isGranted;
+  }
+
+  Future<bool> _requestHealthConnectReadPermission() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return false;
+
+    try {
+      await _health.configure();
+
+      if (Platform.isAndroid) {
+        final sdkStatus = await _health.getHealthConnectSdkStatus();
+        if (sdkStatus != HealthConnectSdkStatus.sdkAvailable) {
+          debugPrint('Health Connect SDK unavailable: $sdkStatus');
+          await _health.installHealthConnect();
+          return false;
+        }
+      }
+
+      final hasGranted = await _health.hasPermissions(
+        [HealthDataType.STEPS],
+        permissions: const [HealthDataAccess.READ],
+      );
+      if (hasGranted == true) {
+        return true;
+      }
+
+      final granted = await _health.requestAuthorization(
+        [HealthDataType.STEPS],
+        permissions: const [HealthDataAccess.READ],
+      );
+      if (granted) {
+        return true;
+      }
+
+      // Some devices return false even when state updates shortly after dialog close.
+      final hasGrantedAfterRequest = await _health.hasPermissions(
+        [HealthDataType.STEPS],
+        permissions: const [HealthDataAccess.READ],
+      );
+      return hasGrantedAfterRequest == true;
+    } catch (error) {
+      debugPrint('Health Connect permission request failed: $error');
+      return false;
+    }
+  }
+
+  Future<bool> _openHealthConnectApp() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      final opened = await _healthConnectChannel.invokeMethod<bool>(
+        'openHealthConnectApp',
+      );
+      _pendingHealthSyncOnResume = opened == true;
+      return opened == true;
+    } catch (error) {
+      debugPrint('Failed to open Health Connect app: $error');
+      return false;
+    }
+  }
+
+  Future<void> _showHealthPermissionRetryDialog() async {
+    if (!mounted || _isHealthSyncing) return;
+
+    await showCupertinoDialog(
       context: context,
       builder: (ctx) {
         return CupertinoAlertDialog(
           title: Text(
-            'ぷにエネルギー回復ルール',
+            'PUNIで許可を取り直す',
             style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
           ),
-          content: Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '・散歩: 1歩ごとに +0.02\n  (100歩で +2.0)',
-                  style: GoogleFonts.notoSansJp(fontSize: 13),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  '・睡眠: 1時間ごとに +10.0',
-                  style: GoogleFonts.notoSansJp(fontSize: 13),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  '・充電: 1分ごとに +0.5\n  (10分で +5.0)',
-                  style: GoogleFonts.notoSansJp(fontSize: 13),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  '※ 上限は 100.0 です。',
-                  style: GoogleFonts.notoSansJp(
-                    fontSize: 12,
-                    color: CupertinoColors.systemGrey,
-                  ),
-                ),
-              ],
-            ),
+          content: Text(
+            Platform.isIOS
+                ? 'PUNI内でヘルスケアの許可をもう一度要求します。\nもし再表示されない場合は、iPhoneの「設定」>「ヘルスケア」>「PUNI」で許可を見直してください。'
+                : 'PUNI内で身体活動とHealth Connectの許可をもう一度要求します。\n許可できたら、そのまま同期をやり直せます。',
+            style: GoogleFonts.notoSansJp(fontSize: 13),
           ),
           actions: [
             CupertinoDialogAction(
-              onPressed: () => Navigator.of(ctx).pop(),
+              onPressed: () async {
+                Navigator.of(ctx).pop();
+                if (Platform.isAndroid) {
+                  final activityGranted =
+                      await _requestActivityRecognitionPermission();
+                  if (!activityGranted) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          '身体活動の許可がまだ必要です。',
+                          style: GoogleFonts.notoSansJp(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        backgroundColor: CupertinoColors.systemRed,
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+
+                  // Give Android a moment to settle after the runtime permission dialog.
+                  await Future.delayed(const Duration(milliseconds: 250));
+                }
+
+                final healthConnectGranted =
+                    await _requestHealthConnectReadPermission();
+                if (!healthConnectGranted && Platform.isAndroid) {
+                  // Retry once because the first HC request can fail right after
+                  // closing the activity recognition permission sheet.
+                  await Future.delayed(const Duration(milliseconds: 250));
+                }
+
+                final finalHealthConnectGranted =
+                    healthConnectGranted ||
+                    (Platform.isAndroid &&
+                        await _requestHealthConnectReadPermission());
+
+                if (!finalHealthConnectGranted) {
+                  if (Platform.isAndroid) {
+                    await _openHealthConnectApp();
+                  }
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        Platform.isAndroid
+                            ? 'Health Connect を開きました。PUNI の歩数を許可して戻ると自動同期します。'
+                            : 'ヘルスケアの歩数許可がまだ必要です。',
+                        style: GoogleFonts.notoSansJp(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      backgroundColor: CupertinoColors.systemRed,
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  return;
+                }
+
+                await _autoSyncHealthData();
+              },
               child: Text(
-                'OK',
+                '再試行',
                 style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
               ),
+            ),
+            CupertinoDialogAction(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: Text('とじる', style: GoogleFonts.notoSansJp()),
             ),
           ],
         );
       },
     );
+  }
+
+  bool _isPermissionDeniedMessage(String? message) {
+    if (message == null) return false;
+    return message.contains('許可されていません');
+  }
+
+  Future<_HealthFetchResult> _ensureHealthReadPermissions() async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return const _HealthFetchResult.failure('この端末ではヘルス同期に対応していません。');
+    }
+
+    await _health.configure();
+
+    if (Platform.isAndroid) {
+      final permission = await Permission.activityRecognition.request();
+      if (!permission.isGranted) {
+        return const _HealthFetchResult.failure('アクティビティ認識の権限が許可されていません。');
+      }
+    }
+
+    final types = [HealthDataType.STEPS];
+
+    final hasGranted = await _health.hasPermissions(
+      types,
+      permissions: const [HealthDataAccess.READ],
+    );
+
+    if (hasGranted == true) {
+      return const _HealthFetchResult.success(1);
+    }
+
+    final granted = await _health.requestAuthorization(
+      types,
+      permissions: const [HealthDataAccess.READ],
+    );
+
+    if (!granted) {
+      return _HealthFetchResult.failure(
+        '$_healthServiceLabel の歩数アクセスが許可されていません。',
+      );
+    }
+
+    return const _HealthFetchResult.success(1);
+  }
+
+  Future<_HealthFetchResult> _fetchTodayHealthSteps() async {
+    try {
+      final permissionResult = await _ensureHealthReadPermissions();
+      if (!permissionResult.isSuccess) {
+        return permissionResult;
+      }
+
+      final now = DateTime.now();
+      final startOfDay = DateTime(now.year, now.month, now.day);
+      final totalSteps = await _health.getTotalStepsInInterval(startOfDay, now);
+      if (totalSteps == null) {
+        return const _HealthFetchResult.failure('歩数データが見つかりませんでした。');
+      }
+
+      return _HealthFetchResult.success(totalSteps);
+    } catch (error) {
+      debugPrint('Health step sync error: $error');
+      return _HealthFetchResult.failure('歩数同期エラー: $error');
+    }
+  }
+
+  /// Auto-sync step data on app startup.
+  Future<void> _autoSyncHealthData() async {
+    if (mounted) {
+      setState(() {
+        _isHealthSyncing = true;
+        _lastHealthSyncPermissionDenied = false;
+      });
+    }
+
+    final failures = <String>[];
+    bool permissionDenied = false;
+    // Sync today's steps
+    final stepsResult = await _fetchTodayHealthSteps();
+    if (stepsResult.isSuccess) {
+      final stepsTotal = stepsResult.value!;
+      final gained = _state.syncTodaySteps(stepsTotal);
+      debugPrint('Steps synced: $stepsTotal total, +$gained new steps');
+    } else if (stepsResult.errorMessage != null) {
+      failures.add('歩数: ${stepsResult.errorMessage!}');
+      permissionDenied = _isPermissionDeniedMessage(stepsResult.errorMessage);
+    }
+
+    if (mounted) {
+      setState(() {
+        _isHealthSyncing = false;
+        _lastHealthSyncSucceeded = failures.isEmpty;
+        _lastHealthSyncPermissionDenied = permissionDenied;
+      });
+    }
+
+    if (failures.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            failures.join('\n'),
+            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: CupertinoColors.systemRed,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 5),
+          action: permissionDenied
+              ? SnackBarAction(
+                  label: '再試行',
+                  textColor: Colors.white,
+                  onPressed: () async {
+                    await _showHealthPermissionRetryDialog();
+                  },
+                )
+              : null,
+        ),
+      );
+    }
   }
 
   LinearGradient _getBackgroundGradient() {
@@ -887,6 +1069,56 @@ class _HomeScreenState extends State<HomeScreen>
       return Colors.white.withOpacity(0.9);
     }
     return const Color(0xFF2C3E50);
+  }
+
+  String _buildHealthSyncStatusText() {
+    if (_isHealthSyncing) {
+      return 'ヘルス同期中';
+    }
+    if (_lastHealthSyncSucceeded == null) {
+      return 'ヘルス未同期';
+    }
+
+    return _lastHealthSyncSucceeded! ? '同期OK' : '同期NG';
+  }
+
+  Color _getHealthSyncStatusColor() {
+    if (_isHealthSyncing) {
+      return const Color(0xFFFF9500);
+    }
+    if (_lastHealthSyncSucceeded == null) {
+      return CupertinoColors.systemGrey;
+    }
+    return _lastHealthSyncSucceeded!
+        ? const Color(0xFF34C759)
+        : const Color(0xFFFF3B30);
+  }
+
+  IconData _getHealthSyncStatusIcon() {
+    if (_isHealthSyncing) {
+      return CupertinoIcons.clock;
+    }
+    if (_lastHealthSyncSucceeded == null) {
+      return CupertinoIcons.question_circle_fill;
+    }
+    return _lastHealthSyncSucceeded!
+        ? CupertinoIcons.check_mark_circled_solid
+        : CupertinoIcons.exclamationmark_circle_fill;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _state.refreshDailyActionLimits();
+      _refreshHealthPermissionDeniedFlag();
+      if (_pendingHealthSyncOnResume && !_isHealthSyncing) {
+        _pendingHealthSyncOnResume = false;
+        Future.delayed(const Duration(milliseconds: 300), () async {
+          if (!mounted || _isHealthSyncing) return;
+          await _autoSyncHealthData();
+        });
+      }
+    }
   }
 
   @override
@@ -1023,20 +1255,42 @@ class _HomeScreenState extends State<HomeScreen>
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
-                            Text(
-                              "🚶 ${_state.stepsToday} 歩",
-                              style: GoogleFonts.notoSansJp(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                color: textThemeColor,
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
                               ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              "柔らかさ: ${_state.softness.toStringAsFixed(0)}%",
-                              style: GoogleFonts.notoSansJp(
-                                fontSize: 11,
-                                color: textThemeColor.withOpacity(0.7),
+                              decoration: BoxDecoration(
+                                color: const Color(
+                                  0xFFFFD740,
+                                ).withOpacity(0.18),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 18,
+                                    height: 18,
+                                    clipBehavior: Clip.antiAlias,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(9),
+                                    ),
+                                    child: SvgPicture.asset(
+                                      'assets/icon/walk_badge_option4.svg',
+                                      fit: BoxFit.cover,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    "さんぽ ${_state.stepsToday} 歩",
+                                    style: GoogleFonts.notoSansJp(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: textThemeColor,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -1073,7 +1327,7 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                     const SizedBox(height: 14),
 
-                    // Puni Energy Display & iOS Health Sync
+                    // Puni Energy Display & Auto Sync status
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -1081,7 +1335,7 @@ class _HomeScreenState extends State<HomeScreen>
                           children: [
                             const Icon(
                               Icons.bolt,
-                              color: Colors.amber,
+                              color: Color(0xFFFF7A9D),
                               size: 16,
                             ),
                             const SizedBox(width: 4),
@@ -1095,43 +1349,82 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ],
                         ),
-                        GestureDetector(
-                          onTap: _showAppleHealthSyncDialog,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 4,
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _getHealthSyncStatusColor().withOpacity(
+                              0.12,
                             ),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFFF2D55).withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: const Color(0xFFFF2D55).withOpacity(0.4),
-                                width: 1.0,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _getHealthSyncStatusIcon(),
+                                color: _getHealthSyncStatusColor(),
+                                size: 13,
                               ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  CupertinoIcons.heart_fill,
-                                  color: Color(0xFFFF2D55),
-                                  size: 12,
+                              const SizedBox(width: 4),
+                              Text(
+                                _buildHealthSyncStatusText(),
+                                style: GoogleFonts.notoSansJp(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: _getHealthSyncStatusColor(),
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  "ヘルスケア同期",
-                                  style: GoogleFonts.notoSansJp(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: textThemeColor,
-                                  ),
-                                ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 4),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: CupertinoButton(
+                        padding: EdgeInsets.zero,
+                        onPressed: _isHealthSyncing
+                            ? null
+                            : () async {
+                                await _autoSyncHealthData();
+                              },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFF2D55).withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_isHealthSyncing)
+                                const CupertinoActivityIndicator(radius: 6)
+                              else
+                                const Icon(
+                                  CupertinoIcons.arrow_clockwise_circle_fill,
+                                  color: Color(0xFFFF2D55),
+                                  size: 13,
+                                ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _isHealthSyncing ? '同期中...' : '手動同期',
+                                style: GoogleFonts.notoSansJp(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: const Color(0xFFFF2D55),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 6),
                     // Energy progress bar
@@ -1200,20 +1493,26 @@ class _HomeScreenState extends State<HomeScreen>
                                         color: isCurrent
                                             ? _primaryColor
                                             : (textThemeColor == Colors.white
-                                                  ? Colors.white.withOpacity(0.1)
-                                                  : Colors.black.withOpacity(0.05)),
+                                                  ? Colors.white.withOpacity(
+                                                      0.1,
+                                                    )
+                                                  : Colors.black.withOpacity(
+                                                      0.05,
+                                                    )),
                                         borderRadius: BorderRadius.circular(12),
                                         border: Border.all(
                                           color: isCurrent
                                               ? Colors.transparent
                                               : (textThemeColor == Colors.white
-                                                    ? Colors.white.withOpacity(0.1)
+                                                    ? Colors.white.withOpacity(
+                                                        0.1,
+                                                      )
                                                     : Colors.black.withOpacity(
                                                         0.1,
                                                       )),
                                           width: 1,
-                                          ),
                                         ),
+                                      ),
                                       child: Text(
                                         "Lv$lv",
                                         style: GoogleFonts.outfit(
@@ -1273,6 +1572,7 @@ class _HomeScreenState extends State<HomeScreen>
                               ? Icons.touch_app
                               : Icons.front_hand,
                           label: _interactionMode == 'drag' ? "触る" : "撫でる",
+                          subtitle: '制限なし',
                           isActive: _interactionMode == 'pet',
                           textThemeColor: textThemeColor,
                           onPressed: () {
@@ -1285,21 +1585,28 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         _buildActionButton(
                           icon: Icons.cookie,
-                          label: "エサ",
+                          label: "ご飯",
+                          subtitle:
+                              '残り ${_state.feedRemainingToday}/${CreatureState.maxFeedPerDay}',
                           isActive: false,
+                          isEnabled: _state.feedRemainingToday > 0,
                           textThemeColor: textThemeColor,
                           onPressed: _spawnFood,
                         ),
                         _buildActionButton(
                           icon: Icons.play_circle_filled,
                           label: "動画でLvUP",
+                          subtitle:
+                              '残り ${_state.adLevelUpRemainingToday}/${CreatureState.maxAdLevelUpPerDay}',
                           isActive: true,
+                          isEnabled: _state.adLevelUpRemainingToday > 0,
                           textThemeColor: textThemeColor,
                           onPressed: _watchAdToLevelUp,
                         ),
                         _buildActionButton(
                           icon: Icons.info_outline,
-                          label: "回復説明",
+                          label: "説明",
+                          subtitle: 'ヘルプ',
                           isActive: false,
                           textThemeColor: textThemeColor,
                           onPressed: _showEnergyRecoveryGuideDialog,
@@ -1323,13 +1630,15 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildActionButton({
     required IconData icon,
     required String label,
+    required String subtitle,
     required bool isActive,
     required Color textThemeColor,
+    bool isEnabled = true,
     required VoidCallback onPressed,
   }) {
     final activeColor = const Color(0xFFFF2A6D);
     return InkWell(
-      onTap: onPressed,
+      onTap: isEnabled ? onPressed : null,
       borderRadius: BorderRadius.circular(16),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1338,7 +1647,9 @@ class _HomeScreenState extends State<HomeScreen>
           children: [
             Icon(
               icon,
-              color: isActive ? activeColor : textThemeColor.withOpacity(0.8),
+              color: isEnabled
+                  ? (isActive ? activeColor : textThemeColor.withOpacity(0.8))
+                  : textThemeColor.withOpacity(0.35),
               size: 24,
             ),
             const SizedBox(height: 6),
@@ -1347,7 +1658,20 @@ class _HomeScreenState extends State<HomeScreen>
               style: GoogleFonts.notoSansJp(
                 fontSize: 11,
                 fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                color: isActive ? activeColor : textThemeColor.withOpacity(0.7),
+                color: isEnabled
+                    ? (isActive ? activeColor : textThemeColor.withOpacity(0.7))
+                    : textThemeColor.withOpacity(0.35),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: GoogleFonts.notoSansJp(
+                fontSize: 9,
+                fontWeight: FontWeight.w600,
+                color: isEnabled
+                    ? textThemeColor.withOpacity(0.55)
+                    : textThemeColor.withOpacity(0.35),
               ),
             ),
           ],
@@ -1448,6 +1772,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _gameLoopController.dispose();
     _accelerometerSub?.cancel();
     _batterySub?.cancel();

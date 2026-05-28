@@ -9,18 +9,28 @@ class CreatureState extends ChangeNotifier {
   static const String _keyShape = 'puni_shape';
   static const String _keyMood = 'puni_mood';
   static const String _keySteps = 'puni_steps';
+  static const String _keyStepsDate = 'puni_steps_date';
+  static const String _keySleepMinutes = 'puni_sleep_minutes';
+  static const String _keySleepDate = 'puni_sleep_date';
   static const String _keyGrowth = 'puni_growth';
   static const String _keyMorningPoints = 'puni_morning_points';
   static const String _keyNightPoints = 'puni_night_points';
   static const String _keyFeedPoints = 'puni_feed_points';
   static const String _keyAdPoints = 'puni_ad_points';
   static const String _keyEnergy = 'puni_energy';
+  static const String _keyFeedCount = 'puni_feed_count';
+  static const String _keyFeedCountDate = 'puni_feed_count_date';
+  static const String _keyAdLevelUpCount = 'puni_ad_levelup_count';
+  static const String _keyAdLevelUpCountDate = 'puni_ad_levelup_count_date';
 
   // Properties
   int _level = 1;
   String _shape = 'default';
   String _mood = 'normal';
   int _stepsToday = 0;
+  String _stepsDate = '';
+  int _sleepMinutes = 0; // Yesterday's sleep duration in minutes
+  String _sleepDate = ''; // Date of last sleep sync (YYYY-MM-DD)
   double _growthToday = 0.0; // 0.0 to 1.0 (level progress)
   double _energy = 100.0; // Puni Energy (0.0 to 100.0)
 
@@ -29,6 +39,13 @@ class CreatureState extends ChangeNotifier {
   double _nightPoints = 0.0;
   double _feedPoints = 0.0;
   double _adPoints = 0.0;
+  int _feedCountToday = 0;
+  String _feedCountDate = '';
+  int _adLevelUpCountToday = 0;
+  String _adLevelUpCountDate = '';
+
+  static const int maxFeedPerDay = 15;
+  static const int maxAdLevelUpPerDay = 8;
 
   // Boost States (Rainbow mode kept internally as fallback or for visual effects)
   bool _isRainbow = false;
@@ -51,6 +68,7 @@ class CreatureState extends ChangeNotifier {
   String get shape => _shape;
   String get mood => _mood;
   int get stepsToday => _stepsToday;
+  int get sleepMinutes => _sleepMinutes;
   double get growthToday => _growthToday;
   double get energy => _energy;
   bool get isRainbow => _isRainbow;
@@ -62,6 +80,11 @@ class CreatureState extends ChangeNotifier {
   double get nightPoints => _nightPoints;
   double get feedPoints => _feedPoints;
   double get adPoints => _adPoints;
+  int get feedCountToday => _feedCountToday;
+  int get adLevelUpCountToday => _adLevelUpCountToday;
+  int get feedRemainingToday => max(0, maxFeedPerDay - _feedCountToday);
+  int get adLevelUpRemainingToday =>
+      max(0, maxAdLevelUpPerDay - _adLevelUpCountToday);
 
   // Dynamic Mixed Color based on training activity distribution (starting at Grey, transitioning to vibrant)
   Color get creatureColor {
@@ -105,44 +128,50 @@ class CreatureState extends ChangeNotifier {
 
   // Softness mapping based on level:
   // Lv1: 木みたいに硬い (1.0%)
-  // Lv5: 少しぷに (20.0%)
-  // Lv15: ゼリー (45.0%)
-  // Lv30: 水風船 (65.0%)
-  // Lv50: 液体系 (80.0%)
+  // Lv5: 少しぷに (18.0%)
+  // Lv15: ゼリー (40.0%)
+  // Lv30: 水風船 (62.0%)
+  // Lv50: 液体系 (78.0%)
+  // Lv75: とろとろ (88.0%)
   // Lv100: ほぼスライム (95.0%)
   double getSoftnessForLevel(int lvl) {
     if (lvl <= 1) return 1.0;
     if (lvl <= 5) {
-      // Interpolate 1.0 -> 20.0
-      return 1.0 + (lvl - 1) / 4.0 * (20.0 - 1.0);
+      // Interpolate 1.0 -> 18.0
+      return 1.0 + (lvl - 1) / 4.0 * (18.0 - 1.0);
     }
     if (lvl <= 15) {
-      // Interpolate 20.0 -> 45.0
-      return 20.0 + (lvl - 5) / 10.0 * (45.0 - 20.0);
+      // Interpolate 18.0 -> 40.0
+      return 18.0 + (lvl - 5) / 10.0 * (40.0 - 18.0);
     }
     if (lvl <= 30) {
-      // Interpolate 45.0 -> 65.0
-      return 45.0 + (lvl - 15) / 15.0 * (65.0 - 45.0);
+      // Interpolate 40.0 -> 62.0
+      return 40.0 + (lvl - 15) / 15.0 * (62.0 - 40.0);
     }
     if (lvl <= 50) {
-      // Interpolate 65.0 -> 80.0
-      return 65.0 + (lvl - 30) / 20.0 * (80.0 - 65.0);
+      // Interpolate 62.0 -> 78.0
+      return 62.0 + (lvl - 30) / 20.0 * (78.0 - 62.0);
+    }
+    if (lvl <= 75) {
+      // Interpolate 78.0 -> 88.0
+      return 78.0 + (lvl - 50) / 25.0 * (88.0 - 78.0);
     }
     if (lvl <= 100) {
-      // Interpolate 80.0 -> 95.0
-      return 80.0 + (lvl - 50) / 50.0 * (95.0 - 80.0);
+      // Interpolate 88.0 -> 95.0
+      return 88.0 + (lvl - 75) / 25.0 * (95.0 - 88.0);
     }
     return 95.0; // Cap at 95.0% softness
   }
 
   // Label text matching level state
   String get softnessLabel {
-    if (_level < 5) return '木みたいに硬い';
-    if (_level < 15) return '少しぷに';
-    if (_level < 30) return 'ゼリー';
-    if (_level < 50) return '水風船';
-    if (_level < 100) return '液体系';
-    return 'ほぼスライム';
+    if (_level < 5) return 'ほぼ石';
+    if (_level < 15) return 'ぷについてきた';
+    if (_level < 30) return 'ゼリーレベル';
+    if (_level < 50) return '水風船レベル';
+    if (_level < 75) return '液体に近づいてきた';
+    if (_level < 100) return 'もうぶにょぶにょ';
+    return 'Top of PUNI（限界点）';
   }
 
   CreatureState() {
@@ -158,12 +187,21 @@ class CreatureState extends ChangeNotifier {
       _shape = prefs.getString(_keyShape) ?? 'default';
       _mood = prefs.getString(_keyMood) ?? 'normal';
       _stepsToday = prefs.getInt(_keySteps) ?? 0;
+      _stepsDate = prefs.getString(_keyStepsDate) ?? '';
+      _sleepMinutes = prefs.getInt(_keySleepMinutes) ?? 0;
+      _sleepDate = prefs.getString(_keySleepDate) ?? '';
       _growthToday = prefs.getDouble(_keyGrowth) ?? 0.0;
       _energy = prefs.getDouble(_keyEnergy) ?? 100.0;
       _morningPoints = prefs.getDouble(_keyMorningPoints) ?? 0.0;
       _nightPoints = prefs.getDouble(_keyNightPoints) ?? 0.0;
       _feedPoints = prefs.getDouble(_keyFeedPoints) ?? 0.0;
       _adPoints = prefs.getDouble(_keyAdPoints) ?? 0.0;
+      _feedCountToday = prefs.getInt(_keyFeedCount) ?? 0;
+      _feedCountDate = prefs.getString(_keyFeedCountDate) ?? '';
+      _adLevelUpCountToday = prefs.getInt(_keyAdLevelUpCount) ?? 0;
+      _adLevelUpCountDate = prefs.getString(_keyAdLevelUpCountDate) ?? '';
+      _resetStepsIfDayChanged();
+      _resetActionCountsIfDayChanged();
       notifyListeners();
     } catch (e) {
       debugPrint("Error loading SharedPreferences: $e");
@@ -178,15 +216,85 @@ class CreatureState extends ChangeNotifier {
       await prefs.setString(_keyShape, _shape);
       await prefs.setString(_keyMood, _mood);
       await prefs.setInt(_keySteps, _stepsToday);
+      await prefs.setString(_keyStepsDate, _stepsDate);
+      await prefs.setInt(_keySleepMinutes, _sleepMinutes);
+      await prefs.setString(_keySleepDate, _sleepDate);
       await prefs.setDouble(_keyGrowth, _growthToday);
       await prefs.setDouble(_keyEnergy, _energy);
       await prefs.setDouble(_keyMorningPoints, _morningPoints);
       await prefs.setDouble(_keyNightPoints, _nightPoints);
       await prefs.setDouble(_keyFeedPoints, _feedPoints);
       await prefs.setDouble(_keyAdPoints, _adPoints);
+      await prefs.setInt(_keyFeedCount, _feedCountToday);
+      await prefs.setString(_keyFeedCountDate, _feedCountDate);
+      await prefs.setInt(_keyAdLevelUpCount, _adLevelUpCountToday);
+      await prefs.setString(_keyAdLevelUpCountDate, _adLevelUpCountDate);
     } catch (e) {
       debugPrint("Error saving SharedPreferences: $e");
     }
+  }
+
+  String _currentDateKey() {
+    final now = DateTime.now();
+    final month = now.month.toString().padLeft(2, '0');
+    final day = now.day.toString().padLeft(2, '0');
+    return '${now.year}-$month-$day';
+  }
+
+  void _resetStepsIfDayChanged() {
+    final today = _currentDateKey();
+    if (_stepsDate == today) return;
+    _stepsDate = today;
+    _stepsToday = 0;
+  }
+
+  bool _resetActionCountsIfDayChanged() {
+    final today = _currentDateKey();
+    var changed = false;
+
+    if (_feedCountDate != today) {
+      _feedCountDate = today;
+      _feedCountToday = 0;
+      changed = true;
+    }
+
+    if (_adLevelUpCountDate != today) {
+      _adLevelUpCountDate = today;
+      _adLevelUpCountToday = 0;
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  void refreshDailyActionLimits() {
+    if (!_resetActionCountsIfDayChanged()) return;
+    notifyListeners();
+    _saveState();
+  }
+
+  bool consumeFeedAction() {
+    _resetActionCountsIfDayChanged();
+    if (_feedCountToday >= maxFeedPerDay) {
+      return false;
+    }
+
+    _feedCountToday++;
+    notifyListeners();
+    _saveState();
+    return true;
+  }
+
+  bool consumeAdLevelUpAction() {
+    _resetActionCountsIfDayChanged();
+    if (_adLevelUpCountToday >= maxAdLevelUpPerDay) {
+      return false;
+    }
+
+    _adLevelUpCountToday++;
+    notifyListeners();
+    _saveState();
+    return true;
   }
 
   // Debug level selector
@@ -271,14 +379,12 @@ class CreatureState extends ChangeNotifier {
       _feedPoints += actualAmount;
     } else if (source == 'ad') {
       _adPoints += actualAmount;
-    } else if (source == 'petting' || source == 'fling') {
-      // Determine color channel by time of day
-      int hour = DateTime.now().hour;
-      if (hour >= 5 && hour < 18) {
-        _morningPoints += actualAmount; // Morning: 5am to 6pm
-      } else {
-        _nightPoints += actualAmount; // Night: 6pm to 5am
-      }
+    } else if (source == 'petting') {
+      // Petting always grows the pink channel.
+      _morningPoints += actualAmount;
+    } else if (source == 'fling') {
+      // Throwing/flicking always grows the purple channel.
+      _nightPoints += actualAmount;
     }
 
     if (_growthToday >= 1.0) {
@@ -335,10 +441,43 @@ class CreatureState extends ChangeNotifier {
 
   // Add steps and gain energy (+0.02 energy per step, i.e. 100 steps = 2.0 energy)
   void addSteps(int count) {
+    _resetStepsIfDayChanged();
     _stepsToday += count;
     _energy = (_energy + count * 0.02).clamp(0.0, 100.0);
     notifyListeners();
     _saveState();
+  }
+
+  int syncTodaySteps(int totalSteps) {
+    _resetStepsIfDayChanged();
+    final safeTotal = max(0, totalSteps);
+    final gainedSteps = max(0, safeTotal - _stepsToday);
+    _stepsToday = safeTotal;
+    if (gainedSteps > 0) {
+      _energy = (_energy + gainedSteps * 0.02).clamp(0.0, 100.0);
+    }
+    notifyListeners();
+    _saveState();
+    return gainedSteps;
+  }
+
+  /// Sleep sync is currently record-only. No energy conversion is applied.
+  /// Returns sync status and always 0 energy gain.
+  ({bool synced, double energyGained}) syncYesterdaySleep(int minutes) {
+    final today = _currentDateKey();
+
+    // Only allow one sync per day
+    if (_sleepDate == today) {
+      debugPrint('Sleep already synced today');
+      return (synced: false, energyGained: 0.0);
+    }
+
+    _sleepMinutes = max(0, minutes);
+    _sleepDate = today;
+
+    notifyListeners();
+    _saveState();
+    return (synced: true, energyGained: 0.0);
   }
 
   // Add sleep duration and convert to energy (+10.0 energy per hour)

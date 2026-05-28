@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-3940256099942544~1458002511</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>PUNIでは今日の歩数と昨日の睡眠時間をヘルスケアから読み取って、毎日の活動量と睡眠を反映します。</string>
 	<key>SKAdNetworkItems</key>
 	<array>
 		<dict>
