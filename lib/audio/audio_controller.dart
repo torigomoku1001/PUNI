@@ -7,7 +7,11 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 class AudioController {
-  late AudioPlayer _voicePlayer;
+  static const int _poolSize = 6;
+  final List<AudioPlayer> _playerPool = [];
+  final List<File?> _tempAudioFiles = List.filled(_poolSize, null);
+  int _currentPlayerIndex = 0;
+
   final Queue<Future<void> Function()> _queue =
       Queue<Future<void> Function()>();
   bool _isDrainingQueue = false;
@@ -24,9 +28,7 @@ class AudioController {
     ),
     iOS: AudioContextIOS(
       category: AVAudioSessionCategory.playback,
-      options: {
-        AVAudioSessionOptions.mixWithOthers,
-      },
+      options: {AVAudioSessionOptions.mixWithOthers},
     ),
   );
 
@@ -49,18 +51,24 @@ class AudioController {
   }
 
   void _initPlayer() {
-    _voicePlayer = AudioPlayer();
-    _voicePlayer.setReleaseMode(ReleaseMode.stop);
-    _voicePlayer.setPlayerMode(PlayerMode.mediaPlayer);
-    _voicePlayer.setAudioContext(_audioContext);
-    _voicePlayer.setVolume(1.0);
+    _playerPool.clear();
+    for (int i = 0; i < _poolSize; i++) {
+      final player = AudioPlayer();
+      player.setReleaseMode(ReleaseMode.stop);
+      player.setPlayerMode(PlayerMode.mediaPlayer);
+      player.setAudioContext(_audioContext);
+      player.setVolume(1.0);
+      _playerPool.add(player);
+    }
   }
 
   Future<void> _resetPlayer() async {
-    try {
-      await _voicePlayer.dispose();
-    } catch (_) {
-      // Ignore dispose errors and recreate anyway.
+    for (var player in _playerPool) {
+      try {
+        await player.dispose();
+      } catch (_) {
+        // Ignore dispose errors
+      }
     }
     _initPlayer();
   }
@@ -262,7 +270,10 @@ class AudioController {
       if (size.isOdd) ptr += 1;
     }
 
-    if (dataSize <= 0 || sampleRate <= 0 || channels <= 0 || bitsPerSample <= 0) {
+    if (dataSize <= 0 ||
+        sampleRate <= 0 ||
+        channels <= 0 ||
+        bitsPerSample <= 0) {
       return 0;
     }
 
@@ -274,89 +285,83 @@ class AudioController {
   }
 
   Future<void> _playBytesNow(Uint8List bytes) async {
-    final int durationMs = _getWavDurationMs(bytes);
-    try {
-      if (_voicePlayer.state == PlayerState.playing) {
-        await _voicePlayer.stop();
+    int playerIndex = -1;
+    for (int i = 0; i < _poolSize; i++) {
+      if (_playerPool[i].state != PlayerState.playing) {
+        playerIndex = i;
+        break;
       }
-      await _voicePlayer.setVolume(1.0);
+    }
+    if (playerIndex == -1) {
+      playerIndex = _currentPlayerIndex;
+      _currentPlayerIndex = (_currentPlayerIndex + 1) % _poolSize;
+    }
+    final AudioPlayer player = _playerPool[playerIndex];
+
+    try {
+      if (player.state == PlayerState.playing) {
+        await player.stop();
+      }
+      await player.setVolume(1.0);
 
       // Smoothly fade in/out both ends of the audio to prevent pop/click noise
       final fadedBytes = _applyFadeInOut(bytes);
 
       Source source;
       if (defaultTargetPlatform == TargetPlatform.iOS) {
-        if (_tempAudioFile == null) {
+        if (_tempAudioFiles[playerIndex] == null) {
           final tempDir = await getTemporaryDirectory();
-          _tempAudioFile = File('${tempDir.path}/temp_voice.wav');
+          _tempAudioFiles[playerIndex] = File(
+            '${tempDir.path}/temp_voice_$playerIndex.wav',
+          );
         }
-        await _tempAudioFile!.writeAsBytes(fadedBytes, flush: true);
-        source = DeviceFileSource(_tempAudioFile!.path);
+        await _tempAudioFiles[playerIndex]!.writeAsBytes(
+          fadedBytes,
+          flush: true,
+        );
+        source = DeviceFileSource(_tempAudioFiles[playerIndex]!.path);
       } else {
         source = BytesSource(fadedBytes);
       }
 
-      await _voicePlayer.play(source);
-      await _waitForPlaybackEndOrTimeout(durationMs);
-
-      // Explicitly stop to avoid hardware/codec standby clicking after playback completes
-      if (_voicePlayer.state == PlayerState.playing) {
-        await _voicePlayer.stop();
-      }
+      await player.play(source);
+      // Wait a tiny bit (25ms) to serialize platform-channel triggers
+      await Future<void>.delayed(const Duration(milliseconds: 25));
     } catch (e) {
       debugPrint('Audio route recovery(bytes): $e');
       await _resetPlayer();
       try {
-        if (_voicePlayer.state == PlayerState.playing) {
-          await _voicePlayer.stop();
+        final AudioPlayer recoveredPlayer = _playerPool[playerIndex];
+        if (recoveredPlayer.state == PlayerState.playing) {
+          await recoveredPlayer.stop();
         }
-        await _voicePlayer.setVolume(1.0);
+        await recoveredPlayer.setVolume(1.0);
 
         final fadedBytes = _applyFadeInOut(bytes);
 
         Source source;
         if (defaultTargetPlatform == TargetPlatform.iOS) {
-          if (_tempAudioFile == null) {
+          if (_tempAudioFiles[playerIndex] == null) {
             final tempDir = await getTemporaryDirectory();
-            _tempAudioFile = File('${tempDir.path}/temp_voice.wav');
+            _tempAudioFiles[playerIndex] = File(
+              '${tempDir.path}/temp_voice_$playerIndex.wav',
+            );
           }
-          await _tempAudioFile!.writeAsBytes(fadedBytes, flush: true);
-          source = DeviceFileSource(_tempAudioFile!.path);
+          await _tempAudioFiles[playerIndex]!.writeAsBytes(
+            fadedBytes,
+            flush: true,
+          );
+          source = DeviceFileSource(_tempAudioFiles[playerIndex]!.path);
         } else {
           source = BytesSource(fadedBytes);
         }
 
-        await _voicePlayer.play(source);
-        await _waitForPlaybackEndOrTimeout(durationMs);
-
-        if (_voicePlayer.state == PlayerState.playing) {
-          await _voicePlayer.stop();
-        }
+        await recoveredPlayer.play(source);
+        await Future<void>.delayed(const Duration(milliseconds: 25));
       } catch (innerErr) {
         debugPrint('Failed to play audio in recovery: $innerErr');
       }
     }
-  }
-
-  Future<void> _waitForPlaybackEndOrTimeout(int durationMs) async {
-    final completeFuture = _voicePlayer.onPlayerComplete.first
-        .then((_) {})
-        .catchError((_) {});
-
-    // Enforce a minimum delay of at least 80% of the duration to ignore premature completion events
-    // (which commonly fire in the first 0-100ms on iOS due to platform channel race conditions),
-    // and a maximum delay of duration + 500ms to ensure it completes even if the stream fails.
-    final int minDelayMs = (durationMs * 0.8).round();
-    final int maxDelayMs = durationMs + 500;
-
-    if (minDelayMs > 0) {
-      await Future<void>.delayed(Duration(milliseconds: minDelayMs));
-    }
-
-    await Future.any<void>([
-      completeFuture,
-      Future<void>.delayed(Duration(milliseconds: max(10, maxDelayMs - minDelayMs))),
-    ]);
   }
 
   Future<void> resetAudioSession() async {
@@ -398,10 +403,7 @@ class AudioController {
   }
 
   Future<void> playPetEndVoice({required bool hasEnergy}) async {
-    _enqueue(
-      () => _playAssetNow('zeronade.wav'),
-      highPriority: true,
-    );
+    _enqueue(() => _playAssetNow('zeronade.wav'), highPriority: true);
   }
 
   Future<void> playWallHitVoice({
@@ -419,69 +421,19 @@ class AudioController {
     _enqueue(() => _playAssetNow('free3.wav'), highPriority: true);
   }
 
-  /// Synthesizes and plays a "puni" (squishy squeeze) sound.
-  /// Lower softness = higher, tighter pitch. Higher softness = lower, wetter pitch.
+  /// Plays puni sound (disabled - using real voice samples instead)
   void playPuni(double softness) {
-    if (!_canTrigger('puni', 90)) return;
-
-    // Softness goes 0 -> 100
-    double pct = (softness / 100.0).clamp(0.0, 1.0);
-
-    double startFreq = lerp(480.0, 180.0, pct);
-    double endFreq = lerp(320.0, 120.0, pct);
-    double duration = lerp(0.12, 0.28, pct);
-
-    final wavBytes = _generateWav(
-      frequencyStart: startFreq,
-      frequencyEnd: endFreq,
-      durationSeconds: duration,
-      softness: softness,
-      vibrato: false,
-    );
-
-    _enqueue(() => _playBytesNow(wavBytes));
+    // Synthesized puni sound disabled - using asset-based voice samples only
   }
 
-  /// Synthesizes and plays a "muni" (stretch/pull) sound.
+  /// Plays muni sound (disabled - using real voice samples instead)
   void playMuni(double softness) {
-    if (!_canTrigger('muni', 100)) return;
-
-    double pct = (softness / 100.0).clamp(0.0, 1.0);
-
-    double startFreq = lerp(350.0, 150.0, pct);
-    double endFreq = lerp(450.0, 220.0, pct); // Sweep upwards
-    double duration = lerp(0.15, 0.35, pct);
-
-    final wavBytes = _generateWav(
-      frequencyStart: startFreq,
-      frequencyEnd: endFreq,
-      durationSeconds: duration,
-      softness: softness,
-      vibrato: false,
-    );
-
-    _enqueue(() => _playBytesNow(wavBytes));
+    // Synthesized muni sound disabled - using asset-based voice samples only
   }
 
-  /// Synthesizes and plays a "boyo" (wall bounce) sound.
+  /// Plays boyo sound (disabled - using real voice samples instead)
   void playBoyo(double softness) {
-    if (!_canTrigger('boyo', 150)) return;
-
-    double pct = (softness / 100.0).clamp(0.0, 1.0);
-
-    double startFreq = lerp(280.0, 110.0, pct);
-    double endFreq = lerp(200.0, 90.0, pct);
-    double duration = lerp(0.2, 0.5, pct);
-
-    final wavBytes = _generateWav(
-      frequencyStart: startFreq,
-      frequencyEnd: endFreq,
-      durationSeconds: duration,
-      softness: softness,
-      vibrato: true, // wobbles!
-    );
-
-    _enqueue(() => _playBytesNow(wavBytes));
+    // Synthesized boyo sound disabled - using asset-based voice samples only
   }
 
   /// Synthesizes and plays a happy chime on feeding or level up.
@@ -663,6 +615,10 @@ class AudioController {
 
   void dispose() {
     _queue.clear();
-    _voicePlayer.dispose();
+    for (var player in _playerPool) {
+      try {
+        player.dispose();
+      } catch (_) {}
+    }
   }
 }

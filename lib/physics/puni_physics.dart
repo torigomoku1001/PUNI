@@ -165,10 +165,30 @@ class PuniPhysics {
     required bool isPetting,
     required Offset gravityVector,
     required bool isCharging,
+    bool isPinching = false,
+    Offset? pinchVector,
+    double pinchDistanceRatio = 1.0,
+    double inflationScale = 1.0,
+    bool isFollowing = false,
+    Offset? followPosition,
+    bool isSleeping = false,
+    VoidCallback? onBounce,
   }) {
     // Avoid division by zero or huge time steps
     if (dt <= 0.0) return;
     if (dt > 0.03) dt = 0.016; // Cap at ~60fps to prevent instability
+
+    double breathingMultiplier = 1.0;
+    final timeSec = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    if (isSleeping) {
+      // Slower, deeper breathing in sleep mode
+      breathingMultiplier = 1.0 + 0.04 * sin(timeSec * 1.8);
+    } else {
+      // Regular gentle breathing
+      breathingMultiplier = 1.0 + 0.015 * sin(timeSec * 3.5);
+    }
+
+    double currentRadius = baseRadius * inflationScale * breathingMultiplier;
 
     // Define physics parameters based on softness
     // Softness scale: 0.0 (stiff/elastic) -> 100.0 (soft/watery)
@@ -199,32 +219,59 @@ class PuniPhysics {
         190.0; // Raised bottom margin to clear menu bar (height - 210.0)
 
     // Allow the center of mass to go closer to the walls at high softness
-    // At Lv 1 (softness 1%): center limit is nearly 100% of baseRadius away (no squish)
-    // At Lv 100 (softness 95%): center limit can get down to 12% of baseRadius away (allowing huge flat squish!)
-    double centerMargin = baseRadius * (1.0 - softnessPct * 0.72);
+    // At Lv 1 (softness 1%): center limit is nearly 100% of currentRadius away (no squish)
+    // At Lv 100 (softness 95%): center limit can get down to 12% of currentRadius away (allowing huge flat squish!)
+    double centerMargin = currentRadius * (1.0 - softnessPct * 0.72);
     double left = leftWall + centerMargin;
     double right = rightWall - centerMargin;
     double top = ceilingY + centerMargin;
     double bottom = floorY - centerMargin;
 
     // 1. UPDATE CENTER NODE
-    if (isDragging && touchPosition != null) {
-      // Follow the touch point with easing
-      Offset targetCenter = touchPosition;
+    bool isPulling = isDragging || (isFollowing && followPosition != null);
+    Offset? pullTarget = isDragging ? touchPosition : followPosition;
+
+    if (isPulling && pullTarget != null) {
+      // Follow the touch/follow point with easing
+      Offset targetCenter = pullTarget;
       // Clamp target center to boundary to keep creature from being dragged offscreen
       targetCenter = Offset(
         targetCenter.dx.clamp(left, right),
         targetCenter.dy.clamp(top, bottom),
       );
 
-      Offset dragForce = (targetCenter - center) * 15.0; // Strong drag pull
-      centerVelocity = Offset.lerp(centerVelocity, dragForce, 0.35)!;
-      final dragSpeed = centerVelocity.distance;
-      const maxDragSpeed = 900.0;
-      if (dragSpeed > maxDragSpeed) {
-        centerVelocity = (centerVelocity / dragSpeed) * maxDragSpeed;
+      if (isDragging) {
+        Offset pullForce = (targetCenter - center) * 30.0;
+        centerVelocity = Offset.lerp(centerVelocity, pullForce, 0.35)!;
+        final pullSpeed = centerVelocity.distance;
+        const maxPullSpeed = 2500.0;
+        if (pullSpeed > maxPullSpeed) {
+          centerVelocity = (centerVelocity / pullSpeed) * maxPullSpeed;
+        }
+        center += centerVelocity * dt;
+      } else {
+        // Living creature follow behavior (gentle drift + swim wiggle)
+        double dist = (targetCenter - center).distance;
+        if (dist > 5.0) {
+          Offset dir = (targetCenter - center) / dist;
+          // Limit maximum speed to ~140.0 pixels per second (very gentle and cute)
+          double targetSpeed = (dist * 2.5).clamp(0.0, 140.0);
+
+          // Add a tiny sinusoidal perpendicular swimming wiggle to make it look alive!
+          // Frequency: ~3.5Hz, Amplitude: ~25.0 pixels/sec
+          double timeSec = DateTime.now().millisecondsSinceEpoch / 1000.0;
+          Offset wiggle = Offset(-dir.dy, dir.dx) * sin(timeSec * 7.0) * 25.0;
+
+          Offset desiredVelocity = dir * targetSpeed + wiggle;
+          centerVelocity = Offset.lerp(centerVelocity, desiredVelocity, 0.08)!;
+        } else {
+          // Arrived: hover/hovering float
+          double timeSec = DateTime.now().millisecondsSinceEpoch / 1000.0;
+          Offset hover = Offset(cos(timeSec * 2.0) * 8.0, sin(timeSec * 1.5) * 8.0);
+          centerVelocity = Offset.lerp(centerVelocity, hover, 0.05)!;
+        }
+        center += centerVelocity * dt;
       }
-      center += centerVelocity * dt;
     } else {
       // Free falling/sliding
       centerVelocity += gravityVector * dt;
@@ -233,13 +280,16 @@ class PuniPhysics {
     }
 
     // Bounce center from boundaries to prevent escaping
+    bool didBounce = false;
     if (center.dy > bottom) {
+      if (centerVelocity.dy.abs() > 120.0) didBounce = true;
       center = Offset(center.dx, bottom);
       centerVelocity = Offset(
         centerVelocity.dx * 0.8,
         -centerVelocity.dy.abs() * 0.5,
       );
     } else if (center.dy < top) {
+      if (centerVelocity.dy.abs() > 120.0) didBounce = true;
       center = Offset(center.dx, top);
       centerVelocity = Offset(
         centerVelocity.dx * 0.8,
@@ -247,12 +297,14 @@ class PuniPhysics {
       );
     }
     if (center.dx < left) {
+      if (centerVelocity.dx.abs() > 120.0) didBounce = true;
       center = Offset(left, center.dy);
       centerVelocity = Offset(
         centerVelocity.dx.abs() * 0.5,
         centerVelocity.dy * 0.8,
       );
     } else if (center.dx > right) {
+      if (centerVelocity.dx.abs() > 120.0) didBounce = true;
       center = Offset(right, center.dy);
       centerVelocity = Offset(
         -centerVelocity.dx.abs() * 0.5,
@@ -260,16 +312,37 @@ class PuniPhysics {
       );
     }
 
-    // 2. CALC TARGET SHAPE OFFSETS
-    List<Offset> targetOffsets = getTargetOffsets(shape, baseRadius);
+    if (didBounce && onBounce != null) {
+      onBounce();
+    }
 
-    // Apply taffy pinch-to-stretch if dragging (pinch and pull)
-    if (isDragging && touchPosition != null) {
+    // 2. CALC TARGET SHAPE OFFSETS
+    List<Offset> targetOffsets = getTargetOffsets(shape, currentRadius);
+
+    // Apply taffy pinch-to-stretch if pinching (two fingers) or dragging (one finger)
+    if (isPinching && pinchVector != null) {
+      double dist = pinchVector.distance;
+      if (dist > 8.0) {
+        Offset pinchDir = pinchVector / dist;
+        // Clamp stretch factor: from 0.5 (contracted) up to 2.2x (highly stretched)
+        double scaleParallel = pinchDistanceRatio.clamp(0.5, 2.2);
+        double scalePerpendicular = 1.0 / sqrt(scaleParallel);
+
+        for (int i = 0; i < nodeCount; i++) {
+          Offset baseOffset = targetOffsets[i];
+          double dot = baseOffset.dx * pinchDir.dx + baseOffset.dy * pinchDir.dy;
+          Offset parallelPart = pinchDir * dot;
+          Offset perpPart = baseOffset - parallelPart;
+          targetOffsets[i] =
+              parallelPart * scaleParallel + perpPart * scalePerpendicular;
+        }
+      }
+    } else if (isDragging && touchPosition != null) {
       Offset dragVec = touchPosition - center;
       double dragDistance = dragVec.distance;
       if (dragDistance > 8.0) {
         Offset dragDir = dragVec / dragDistance;
-        double stretchFactor = (dragDistance / baseRadius).clamp(0.0, 0.8);
+        double stretchFactor = (dragDistance / currentRadius).clamp(0.0, 0.8);
         double scaleParallel =
             1.0 + stretchFactor * 0.55; // Stretch up to 1.44x
         double scalePerpendicular =
@@ -286,7 +359,7 @@ class PuniPhysics {
       }
     }
 
-    double targetArea = pi * baseRadius * baseRadius;
+    double targetArea = pi * currentRadius * currentRadius;
 
     // Calculate current polygon area for volume conservation
     double currentArea = 0.0;
@@ -419,9 +492,9 @@ class PuniPhysics {
             (nodePositions[i] /
                 (distFromCenter > 0.01 ? distFromCenter : 1.0)) *
             6.0;
-      } else if (distFromCenter > baseRadius * 2.2) {
+      } else if (distFromCenter > currentRadius * 2.2) {
         nodePositions[i] =
-            (nodePositions[i] / distFromCenter) * (baseRadius * 2.2);
+            (nodePositions[i] / distFromCenter) * (currentRadius * 2.2);
       }
 
       // Wall collision for absolute node positions using the exact physical wall boundaries:

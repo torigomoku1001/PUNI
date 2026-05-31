@@ -46,7 +46,7 @@ class MyApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF0D0D1E),
       ),
-      themeMode: ThemeMode.system,
+      themeMode: ThemeMode.light,
       home: const SplashScreen(),
     );
   }

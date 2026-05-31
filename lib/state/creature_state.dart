@@ -13,6 +13,7 @@ class CreatureState extends ChangeNotifier {
   static const String _keySleepMinutes = 'puni_sleep_minutes';
   static const String _keySleepDate = 'puni_sleep_date';
   static const String _keyGrowth = 'puni_growth';
+  static const String _keyExp = 'puni_exp';
   static const String _keyMorningPoints = 'puni_morning_points';
   static const String _keyNightPoints = 'puni_night_points';
   static const String _keyFeedPoints = 'puni_feed_points';
@@ -22,6 +23,20 @@ class CreatureState extends ChangeNotifier {
   static const String _keyFeedCountDate = 'puni_feed_count_date';
   static const String _keyAdLevelUpCount = 'puni_ad_levelup_count';
   static const String _keyAdLevelUpCountDate = 'puni_ad_levelup_count_date';
+  static const String _keyIntimacy = 'puni_intimacy';
+  static const String _keyColorLocked = 'puni_color_locked';
+  static const String _keyLockedColorR = 'puni_locked_color_r';
+  static const String _keyLockedColorG = 'puni_locked_color_g';
+  static const String _keyLockedColorB = 'puni_locked_color_b';
+  static const String _keyPinchPoints = 'puni_pinch_points';
+  static const String _keyBalloonPoints = 'puni_balloon_points';
+  static const String _keyOrangePoints = 'puni_orange_points';
+  static const String _keyBluePoints = 'puni_blue_points';
+  static const String _keyWhitePoints = 'puni_white_points';
+  static const String _keyBlackPoints = 'puni_black_points';
+  static const String _keyPuniCoins = 'puni_coins';
+  static const String _keyPlayerName = 'puni_player_name';
+  static const String _keyPuniName = 'puni_puni_name';
 
   // Properties
   int _level = 1;
@@ -31,21 +46,34 @@ class CreatureState extends ChangeNotifier {
   String _stepsDate = '';
   int _sleepMinutes = 0; // Yesterday's sleep duration in minutes
   String _sleepDate = ''; // Date of last sleep sync (YYYY-MM-DD)
-  double _growthToday = 0.0; // 0.0 to 1.0 (level progress)
+  double _exp = 0.0; // Current experience points in the current level
+  double _growthToday = 0.0; // Legacy compatibility (0.0 to 1.0)
   double _energy = 100.0; // Puni Energy (0.0 to 100.0)
+  double _intimacy = 0.0; // Puni Intimacy (0.0 to 100.0)
+  bool _isColorLocked = false;
+  Color? _lockedColor;
+  int _puniCoins = 0;
+  String _playerName = 'ぷにマスター';
+  String _puniName = 'ぷにちゃん';
 
   // Care interaction stats (growth points contributed by activity)
   double _morningPoints = 0.0;
   double _nightPoints = 0.0;
   double _feedPoints = 0.0;
   double _adPoints = 0.0;
+  double _pinchPoints = 0.0;
+  double _balloonPoints = 0.0;
+  double _orangePoints = 0.0;
+  double _bluePoints = 0.0;
+  double _whitePoints = 0.0;
+  double _blackPoints = 0.0;
   int _feedCountToday = 0;
   String _feedCountDate = '';
   int _adLevelUpCountToday = 0;
   String _adLevelUpCountDate = '';
 
   static const int maxFeedPerDay = 15;
-  static const int maxAdLevelUpPerDay = 8;
+  static const int maxAdLevelUpPerDay = 5;
 
   // Boost States (Rainbow mode kept internally as fallback or for visual effects)
   bool _isRainbow = false;
@@ -56,6 +84,8 @@ class CreatureState extends ChangeNotifier {
   Offset? _touchPosition;
   bool _isDragging = false;
   bool _isPetting = false;
+  bool _isPinching = false;
+  bool _isInflating = false;
 
   // Timers
   Timer? _moodResetTimer;
@@ -69,55 +99,155 @@ class CreatureState extends ChangeNotifier {
   String get mood => _mood;
   int get stepsToday => _stepsToday;
   int get sleepMinutes => _sleepMinutes;
-  double get growthToday => _growthToday;
+  double get exp => _exp;
+  int get requiredExp => getRequiredExpForLevel(_level);
+  double get growthToday {
+    final req = requiredExp;
+    if (req <= 0) return 0.0;
+    return (_exp / req).clamp(0.0, 1.0);
+  }
+
+  int getRequiredExpForLevel(int lvl) {
+    if (lvl <= 1) return 30; // Lv1→Lv2: 30経験値
+    if (lvl <= 5) return 50; // Lv2-5: 50経験値
+    if (lvl <= 10) return 100; // Lv6-10: 100経験値
+    if (lvl <= 20) return 200; // Lv11-20: 200経験値
+    if (lvl <= 30) return 400; // Lv21-30: 400経験値
+    if (lvl <= 50) return 800; // Lv31-50: 800経験値
+    if (lvl <= 75) return 1300; // Lv51-75: 1300経験値
+    return 2000; // Lv76+: 2000経験値
+  }
+
   double get energy => _energy;
   bool get isRainbow => _isRainbow;
   int get boostTimeRemaining => _boostTimeRemaining;
   Offset? get touchPosition => _touchPosition;
   bool get isDragging => _isDragging;
   bool get isPetting => _isPetting;
+  bool get isPinching => _isPinching;
+  bool get isInflating => _isInflating;
   double get morningPoints => _morningPoints;
   double get nightPoints => _nightPoints;
   double get feedPoints => _feedPoints;
   double get adPoints => _adPoints;
+  double get pinchPoints => _pinchPoints;
+  double get balloonPoints => _balloonPoints;
+  double get orangePoints => _orangePoints;
+  double get bluePoints => _bluePoints;
+  double get whitePoints => _whitePoints;
+  double get blackPoints => _blackPoints;
   int get feedCountToday => _feedCountToday;
   int get adLevelUpCountToday => _adLevelUpCountToday;
   int get feedRemainingToday => max(0, maxFeedPerDay - _feedCountToday);
   int get adLevelUpRemainingToday =>
       max(0, maxAdLevelUpPerDay - _adLevelUpCountToday);
+  double get intimacy => _intimacy;
+  bool get isColorLocked => _isColorLocked;
+  Color? get lockedColor => _lockedColor;
+  int get puniCoins => _puniCoins;
+  String get playerName => _playerName;
+  String get puniName => _puniName;
+
+  void addCoins(int amount) {
+    _puniCoins += amount;
+    notifyListeners();
+    _saveState();
+  }
+
+  bool spendCoins(int amount) {
+    if (_puniCoins < amount) return false;
+    _puniCoins -= amount;
+    notifyListeners();
+    _saveState();
+    return true;
+  }
+
+  void setPlayerName(String name) {
+    _playerName = name;
+    notifyListeners();
+    _saveState();
+  }
+
+  void setPuniName(String name) {
+    _puniName = name;
+    notifyListeners();
+    _saveState();
+  }
+
+  void setMood(String mood) {
+    _mood = mood;
+    notifyListeners();
+  }
 
   // Dynamic Mixed Color based on training activity distribution (starting at Grey, transitioning to vibrant)
   Color get creatureColor {
+    if (_isColorLocked && _lockedColor != null) {
+      return _lockedColor!;
+    }
     // Target colors for care style
     const morningColor = Color(0xFFFF8DA1); // Pink (桃色)
     const nightColor = Color(0xFFB388FF); // Purple (紫色)
     const adColor = Color(0xFF80D8FF); // Sky Blue (水色)
     const feedColor = Color(0xFFFFD740); // Yellow (黄色)
+    const pinchColor = Color(0xFFFF2D55); // Red (赤色)
+    const balloonColor = Color(0xFF2ECC71); // Green (緑色)
+    const orangeColor = Color(0xFFFF9F0A); // Orange (オレンジ色)
+    const blueColor = Color(0xFF007AFF); // Blue (青色)
+    const whiteColor = Color(0xFFFFFFFF); // White (白色)
 
-    double total = _morningPoints + _nightPoints + _adPoints + _feedPoints;
+    double total =
+        _morningPoints +
+        _nightPoints +
+        _adPoints +
+        _feedPoints +
+        _pinchPoints +
+        _balloonPoints +
+        _orangePoints +
+        _bluePoints +
+        _whitePoints;
 
     // Balanced defaults if total is 0 (e.g. at start)
-    double pMorning = total == 0 ? 0.25 : _morningPoints / total;
-    double pNight = total == 0 ? 0.25 : _nightPoints / total;
-    double pAd = total == 0 ? 0.25 : _adPoints / total;
-    double pFeed = total == 0 ? 0.25 : _feedPoints / total;
+    double pMorning = total == 0 ? 1 / 9 : _morningPoints / total;
+    double pNight = total == 0 ? 1 / 9 : _nightPoints / total;
+    double pAd = total == 0 ? 1 / 9 : _adPoints / total;
+    double pFeed = total == 0 ? 1 / 9 : _feedPoints / total;
+    double pPinch = total == 0 ? 1 / 9 : _pinchPoints / total;
+    double pBalloon = total == 0 ? 1 / 9 : _balloonPoints / total;
+    double pOrange = total == 0 ? 1 / 9 : _orangePoints / total;
+    double pBlue = total == 0 ? 1 / 9 : _bluePoints / total;
+    double pWhite = total == 0 ? 1 / 9 : _whitePoints / total;
 
     // Blend the RGB values
     double r =
         morningColor.red * pMorning +
         nightColor.red * pNight +
         adColor.red * pAd +
-        feedColor.red * pFeed;
+        feedColor.red * pFeed +
+        pinchColor.red * pPinch +
+        balloonColor.red * pBalloon +
+        orangeColor.red * pOrange +
+        blueColor.red * pBlue +
+        whiteColor.red * pWhite;
     double g =
         morningColor.green * pMorning +
         nightColor.green * pNight +
         adColor.green * pAd +
-        feedColor.green * pFeed;
+        feedColor.green * pFeed +
+        pinchColor.green * pPinch +
+        balloonColor.green * pBalloon +
+        orangeColor.green * pOrange +
+        blueColor.green * pBlue +
+        whiteColor.green * pWhite;
     double b =
         morningColor.blue * pMorning +
         nightColor.blue * pNight +
         adColor.blue * pAd +
-        feedColor.blue * pFeed;
+        feedColor.blue * pFeed +
+        pinchColor.blue * pPinch +
+        balloonColor.blue * pBalloon +
+        orangeColor.blue * pOrange +
+        blueColor.blue * pBlue +
+        whiteColor.blue * pWhite;
 
     Color trainedColor = Color.fromARGB(255, r.round(), g.round(), b.round());
 
@@ -190,16 +320,35 @@ class CreatureState extends ChangeNotifier {
       _stepsDate = prefs.getString(_keyStepsDate) ?? '';
       _sleepMinutes = prefs.getInt(_keySleepMinutes) ?? 0;
       _sleepDate = prefs.getString(_keySleepDate) ?? '';
+      _exp = (prefs.getDouble(_keyExp) ?? (prefs.getInt(_keyExp) ?? 0))
+          .toDouble();
       _growthToday = prefs.getDouble(_keyGrowth) ?? 0.0;
       _energy = prefs.getDouble(_keyEnergy) ?? 100.0;
       _morningPoints = prefs.getDouble(_keyMorningPoints) ?? 0.0;
       _nightPoints = prefs.getDouble(_keyNightPoints) ?? 0.0;
       _feedPoints = prefs.getDouble(_keyFeedPoints) ?? 0.0;
       _adPoints = prefs.getDouble(_keyAdPoints) ?? 0.0;
+      _pinchPoints = prefs.getDouble(_keyPinchPoints) ?? 0.0;
+      _balloonPoints = prefs.getDouble(_keyBalloonPoints) ?? 0.0;
+      _orangePoints = prefs.getDouble(_keyOrangePoints) ?? 0.0;
+      _bluePoints = prefs.getDouble(_keyBluePoints) ?? 0.0;
+      _whitePoints = prefs.getDouble(_keyWhitePoints) ?? 0.0;
+      _blackPoints = prefs.getDouble(_keyBlackPoints) ?? 0.0;
       _feedCountToday = prefs.getInt(_keyFeedCount) ?? 0;
       _feedCountDate = prefs.getString(_keyFeedCountDate) ?? '';
       _adLevelUpCountToday = prefs.getInt(_keyAdLevelUpCount) ?? 0;
       _adLevelUpCountDate = prefs.getString(_keyAdLevelUpCountDate) ?? '';
+      _intimacy = prefs.getDouble(_keyIntimacy) ?? 0.0;
+      _isColorLocked = prefs.getBool(_keyColorLocked) ?? false;
+      _puniCoins = prefs.getInt(_keyPuniCoins) ?? 0;
+      _playerName = prefs.getString(_keyPlayerName) ?? 'ぷにマスター';
+      _puniName = prefs.getString(_keyPuniName) ?? 'ぷにちゃん';
+      final r = prefs.getInt(_keyLockedColorR);
+      final g = prefs.getInt(_keyLockedColorG);
+      final b = prefs.getInt(_keyLockedColorB);
+      if (r != null && g != null && b != null) {
+        _lockedColor = Color.fromARGB(255, r, g, b);
+      }
       _resetStepsIfDayChanged();
       _resetActionCountsIfDayChanged();
       notifyListeners();
@@ -219,16 +368,37 @@ class CreatureState extends ChangeNotifier {
       await prefs.setString(_keyStepsDate, _stepsDate);
       await prefs.setInt(_keySleepMinutes, _sleepMinutes);
       await prefs.setString(_keySleepDate, _sleepDate);
+      await prefs.setDouble(_keyExp, _exp);
       await prefs.setDouble(_keyGrowth, _growthToday);
       await prefs.setDouble(_keyEnergy, _energy);
       await prefs.setDouble(_keyMorningPoints, _morningPoints);
       await prefs.setDouble(_keyNightPoints, _nightPoints);
       await prefs.setDouble(_keyFeedPoints, _feedPoints);
       await prefs.setDouble(_keyAdPoints, _adPoints);
+      await prefs.setDouble(_keyPinchPoints, _pinchPoints);
+      await prefs.setDouble(_keyBalloonPoints, _balloonPoints);
+      await prefs.setDouble(_keyOrangePoints, _orangePoints);
+      await prefs.setDouble(_keyBluePoints, _bluePoints);
+      await prefs.setDouble(_keyWhitePoints, _whitePoints);
+      await prefs.setDouble(_keyBlackPoints, _blackPoints);
       await prefs.setInt(_keyFeedCount, _feedCountToday);
       await prefs.setString(_keyFeedCountDate, _feedCountDate);
       await prefs.setInt(_keyAdLevelUpCount, _adLevelUpCountToday);
       await prefs.setString(_keyAdLevelUpCountDate, _adLevelUpCountDate);
+      await prefs.setDouble(_keyIntimacy, _intimacy);
+      await prefs.setBool(_keyColorLocked, _isColorLocked);
+      await prefs.setInt(_keyPuniCoins, _puniCoins);
+      await prefs.setString(_keyPlayerName, _playerName);
+      await prefs.setString(_keyPuniName, _puniName);
+      if (_lockedColor != null) {
+        await prefs.setInt(_keyLockedColorR, _lockedColor!.red);
+        await prefs.setInt(_keyLockedColorG, _lockedColor!.green);
+        await prefs.setInt(_keyLockedColorB, _lockedColor!.blue);
+      } else {
+        await prefs.remove(_keyLockedColorR);
+        await prefs.remove(_keyLockedColorG);
+        await prefs.remove(_keyLockedColorB);
+      }
     } catch (e) {
       debugPrint("Error saving SharedPreferences: $e");
     }
@@ -304,10 +474,19 @@ class CreatureState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Debug intimacy selector
+  void debugSetIntimacy(double val) {
+    _intimacy = val.clamp(0.0, 100.0);
+    _saveState();
+    notifyListeners();
+  }
+
   // Set interaction state
   void setInteraction({
     required bool isDragging,
     required bool isPetting,
+    bool isPinching = false,
+    bool isInflating = false,
     Offset? touchPosition,
   }) {
     if (isDragging && !_isDragging) {
@@ -322,12 +501,22 @@ class CreatureState extends ChangeNotifier {
       } else {
         _mood = 'happy'; // Shy/happy (照れる)
       }
-    } else if (!isDragging && !isPetting && (_isDragging || _isPetting)) {
+    } else if (isPinching && !_isPinching) {
+      _mood = 'happy'; // Blushing/happy when pinched
+    } else if (isInflating && !_isInflating) {
+      _mood = 'happy'; // Happy when inflating
+    } else if (!isDragging &&
+        !isPetting &&
+        !isPinching &&
+        !isInflating &&
+        (_isDragging || _isPetting || _isPinching || _isInflating)) {
       _mood = 'normal'; // Released -> Normal
     }
 
     _isDragging = isDragging;
     _isPetting = isPetting;
+    _isPinching = isPinching;
+    _isInflating = isInflating;
     _touchPosition = touchPosition;
     notifyListeners();
   }
@@ -350,8 +539,16 @@ class CreatureState extends ChangeNotifier {
   }
 
   // Gain growth progress with source tracking and Puni Energy check
-  void addGrowth(double amount, {required String source}) {
-    bool requiresEnergy = (source == 'petting' || source == 'fling');
+  void addGrowth(
+    double amount, {
+    required String source,
+    String foodType = 'default',
+  }) {
+    bool requiresEnergy =
+        (source == 'petting' ||
+        source == 'fling' ||
+        source == 'pinch' ||
+        source == 'balloon');
 
     if (requiresEnergy) {
       if (_energy <= 0.0) {
@@ -374,38 +571,78 @@ class CreatureState extends ChangeNotifier {
     double actualAmount = amount * multiplier;
     _growthToday += actualAmount;
 
-    // Apply color channel points
-    if (source == 'feed') {
-      _feedPoints += actualAmount;
-    } else if (source == 'ad') {
-      _adPoints += actualAmount;
-    } else if (source == 'petting') {
-      // Petting always grows the pink channel.
-      _morningPoints += actualAmount;
-    } else if (source == 'fling') {
-      // Throwing/flicking always grows the purple channel.
-      _nightPoints += actualAmount;
+    // Apply color channel points ONLY via food source and when NOT color-locked
+    if (source == 'feed' && !_isColorLocked) {
+      const double foodColorWeight = 10.0; // Flat weight per color feed
+      if (foodType == 'red') {
+        _pinchPoints += foodColorWeight;
+      } else if (foodType == 'green') {
+        _balloonPoints += foodColorWeight;
+      } else if (foodType == 'yellow') {
+        _feedPoints += foodColorWeight;
+      } else if (foodType == 'pink') {
+        _morningPoints += foodColorWeight;
+      } else if (foodType == 'purple') {
+        _nightPoints += foodColorWeight;
+      } else if (foodType == 'cyan') {
+        _adPoints += foodColorWeight;
+      } else if (foodType == 'orange') {
+        _orangePoints += foodColorWeight;
+      } else if (foodType == 'blue') {
+        _bluePoints += foodColorWeight;
+      } else if (foodType == 'white') {
+        _whitePoints += foodColorWeight;
+      } else if (foodType == 'black') {
+        _blackPoints += foodColorWeight;
+      }
     }
 
-    if (_growthToday >= 1.0) {
+    // Add experience points (scaled for consistency)
+    // 0.002 growth = 0.2 exp (preserves precision with double)
+    double expGain = actualAmount * 100.0;
+    _exp += expGain;
+
+    // Check for level up
+    while (_exp >= requiredExp) {
       _levelUp();
-    } else {
-      notifyListeners();
-      _saveState();
     }
+    notifyListeners();
+    _saveState();
   }
 
   void _levelUp() {
     _level++;
-    _growthToday = max(0.0, _growthToday - 1.0);
+    _exp -= requiredExp
+        .toDouble(); // Reduce exp by the required amount for the old level
+    _growthToday = max(0.0, _growthToday - 1.0); // Legacy compatibility
     triggerMood('levelup', duration: const Duration(milliseconds: 100));
     notifyListeners();
     _saveState();
   }
 
-  // Instant level up triggered by interstitial ad watch (rewards 1.0 full growth under ad source)
-  void performAdLevelUp() {
-    addGrowth(1.0, source: 'ad');
+  // Watch ad to get coins instead of level up
+  void rewardAdCoins() {
+    _puniCoins += 50;
+    notifyListeners();
+    _saveState();
+  }
+
+  void addIntimacy(double amount) {
+    _intimacy = (_intimacy + amount).clamp(0.0, 100.0);
+    notifyListeners();
+    _saveState();
+  }
+
+  void toggleColorLock() {
+    if (_isColorLocked) {
+      _isColorLocked = false;
+      _lockedColor = null;
+    } else {
+      _lockedColor = creatureColor;
+      _isColorLocked = true;
+    }
+    notifyListeners();
+    _saveState();
   }
 
   // Set shape manually (kept internally)

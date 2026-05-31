@@ -70,6 +70,9 @@ void main() {
       isBlinking: false,
       isRainbow: false,
       isCharging: false,
+      intimacy: 0.0,
+      isColorLocked: false,
+      touchParticles: const [],
     );
     
     // Set custom size for painter layout
