@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class CreatureState extends ChangeNotifier {
+  static const int SCALE_FACTOR = 100;
   // Persistence Keys
   static const String _keyLevel = 'puni_level';
   static const String _keyShape = 'puni_shape';
@@ -48,8 +49,8 @@ class CreatureState extends ChangeNotifier {
   String _sleepDate = ''; // Date of last sleep sync (YYYY-MM-DD)
   double _exp = 0.0; // Current experience points in the current level
   double _growthToday = 0.0; // Legacy compatibility (0.0 to 1.0)
-  double _energy = 100.0; // Puni Energy (0.0 to 100.0)
-  double _intimacy = 0.0; // Puni Intimacy (0.0 to 100.0)
+  double _energy = 100.0 * SCALE_FACTOR; // Puni Energy (scaled)
+  double _intimacy = 0.0; // Puni Intimacy (scaled)
   bool _isColorLocked = false;
   Color? _lockedColor;
   int _puniCoins = 0;
@@ -108,14 +109,14 @@ class CreatureState extends ChangeNotifier {
   }
 
   int getRequiredExpForLevel(int lvl) {
-    if (lvl <= 1) return 30; // Lv1→Lv2: 30経験値
-    if (lvl <= 5) return 50; // Lv2-5: 50経験値
-    if (lvl <= 10) return 100; // Lv6-10: 100経験値
-    if (lvl <= 20) return 200; // Lv11-20: 200経験値
-    if (lvl <= 30) return 400; // Lv21-30: 400経験値
-    if (lvl <= 50) return 800; // Lv31-50: 800経験値
-    if (lvl <= 75) return 1300; // Lv51-75: 1300経験値
-    return 2000; // Lv76+: 2000経験値
+    if (lvl <= 1) return 30 * SCALE_FACTOR; // Lv1→Lv2: 30経験値
+    if (lvl <= 5) return 50 * SCALE_FACTOR; // Lv2-5: 50経験値
+    if (lvl <= 10) return 100 * SCALE_FACTOR; // Lv6-10: 100経験値
+    if (lvl <= 20) return 200 * SCALE_FACTOR; // Lv11-20: 200経験値
+    if (lvl <= 30) return 400 * SCALE_FACTOR; // Lv21-30: 400経験値
+    if (lvl <= 50) return 800 * SCALE_FACTOR; // Lv31-50: 800経験値
+    if (lvl <= 75) return 1300 * SCALE_FACTOR; // Lv51-75: 1300経験値
+    return 2000 * SCALE_FACTOR; // Lv76+: 2000経験値
   }
 
   double get energy => _energy;
@@ -476,7 +477,7 @@ class CreatureState extends ChangeNotifier {
 
   // Debug intimacy selector
   void debugSetIntimacy(double val) {
-    _intimacy = val.clamp(0.0, 100.0);
+    _intimacy = val.clamp(0.0, 100.0 * SCALE_FACTOR);
     _saveState();
     notifyListeners();
   }
@@ -590,8 +591,6 @@ class CreatureState extends ChangeNotifier {
         _orangePoints += foodColorWeight;
       } else if (foodType == 'blue') {
         _bluePoints += foodColorWeight;
-      } else if (foodType == 'white') {
-        _whitePoints += foodColorWeight;
       } else if (foodType == 'black') {
         _blackPoints += foodColorWeight;
       }
@@ -599,7 +598,7 @@ class CreatureState extends ChangeNotifier {
 
     // Add experience points (scaled for consistency)
     // 0.002 growth = 0.2 exp (preserves precision with double)
-    double expGain = actualAmount * 100.0;
+    double expGain = actualAmount * 100.0 * SCALE_FACTOR;
     _exp += expGain;
 
     // Check for level up
@@ -611,9 +610,9 @@ class CreatureState extends ChangeNotifier {
   }
 
   void _levelUp() {
+    final requiredBeforeLevelUp = requiredExp.toDouble();
+    _exp = max(0.0, _exp - requiredBeforeLevelUp);
     _level++;
-    _exp -= requiredExp
-        .toDouble(); // Reduce exp by the required amount for the old level
     _growthToday = max(0.0, _growthToday - 1.0); // Legacy compatibility
     triggerMood('levelup', duration: const Duration(milliseconds: 100));
     notifyListeners();
@@ -622,13 +621,17 @@ class CreatureState extends ChangeNotifier {
 
   // Watch ad to get coins instead of level up
   void rewardAdCoins() {
-    _puniCoins += 50;
+    _puniCoins += 25;
     notifyListeners();
     _saveState();
   }
 
   void addIntimacy(double amount) {
-    _intimacy = (_intimacy + amount).clamp(0.0, 100.0);
+    // Normalize tiny amounts (treat a single interaction as +0.2)
+    if (amount < 0.02) amount = 0.2;
+    // Add intimacy as `amount` in percent-like units, stored scaled.
+    // No UI cap requested; backend hard cap set very high to avoid overflow.
+    _intimacy = (_intimacy + amount * SCALE_FACTOR).clamp(0.0, 999999.0);
     notifyListeners();
     _saveState();
   }
@@ -680,7 +683,10 @@ class CreatureState extends ChangeNotifier {
   void addSteps(int count) {
     _resetStepsIfDayChanged();
     _stepsToday += count;
-    _energy = (_energy + count * 0.02).clamp(0.0, 100.0);
+    _energy = (_energy + count * 0.02 * SCALE_FACTOR).clamp(
+      0.0,
+      100.0 * SCALE_FACTOR,
+    );
     notifyListeners();
     _saveState();
   }
@@ -691,7 +697,10 @@ class CreatureState extends ChangeNotifier {
     final gainedSteps = max(0, safeTotal - _stepsToday);
     _stepsToday = safeTotal;
     if (gainedSteps > 0) {
-      _energy = (_energy + gainedSteps * 0.02).clamp(0.0, 100.0);
+      _energy = (_energy + gainedSteps * 0.02 * SCALE_FACTOR).clamp(
+        0.0,
+        100.0 * SCALE_FACTOR,
+      );
     }
     notifyListeners();
     _saveState();
@@ -719,7 +728,10 @@ class CreatureState extends ChangeNotifier {
 
   // Add sleep duration and convert to energy (+10.0 energy per hour)
   void addSleepEnergy(double hours) {
-    _energy = (_energy + hours * 10.0).clamp(0.0, 100.0);
+    _energy = (_energy + hours * 10.0 * SCALE_FACTOR).clamp(
+      0.0,
+      100.0 * SCALE_FACTOR,
+    );
     notifyListeners();
     _saveState();
   }
@@ -727,7 +739,10 @@ class CreatureState extends ChangeNotifier {
   // Add charging duration and convert to energy (+0.5 energy per minute)
   void addChargingEnergySeconds(double seconds) {
     if (seconds <= 0.0) return;
-    final next = (_energy + seconds * (0.5 / 60.0)).clamp(0.0, 100.0);
+    final next = (_energy + seconds * (0.5 / 60.0) * SCALE_FACTOR).clamp(
+      0.0,
+      100.0 * SCALE_FACTOR,
+    );
     if ((next - _energy).abs() < 0.0001) return;
     _energy = next;
     notifyListeners();

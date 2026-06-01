@@ -394,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen>
     _audioController.playFeedVoice();
     _state.triggerMood('eating', duration: const Duration(seconds: 2));
     _state.addGrowth(
-      0.12,
+      0.02,
       source: 'feed',
       foodType: foodType,
     ); // Growth from eating
@@ -423,24 +423,22 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _maybeDropCoin(Offset position) {
-    if (Random().nextDouble() < 0.22) {
-      final coins = Random().nextInt(8) + 1;
-      _state.addCoins(coins);
-      for (int i = 0; i < coins; i++) {
-        final angle = -pi / 2.0 + (Random().nextDouble() - 0.5) * (pi / 3.0);
-        final speed = 150.0 + Random().nextDouble() * 200.0;
-        _touchParticles.add(
-          TouchParticle(
-            position: position,
-            velocity: Offset(cos(angle) * speed, sin(angle) * speed),
-            maxLife: 1.2 + Random().nextDouble() * 0.6,
-            color: const Color(0xFFFFD700),
-            isBubble: false,
-            isCoin: true,
-          ),
-        );
-      }
-    }
+    // 10% chance to drop exactly 1 coin on PUNI interaction.
+    if (Random().nextDouble() >= 0.10) return;
+
+    _state.addCoins(1);
+    final angle = -pi / 2.0 + (Random().nextDouble() - 0.5) * (pi / 3.0);
+    final speed = 150.0 + Random().nextDouble() * 200.0;
+    _touchParticles.add(
+      TouchParticle(
+        position: position,
+        velocity: Offset(cos(angle) * speed, sin(angle) * speed),
+        maxLife: 1.2 + Random().nextDouble() * 0.6,
+        color: const Color(0xFFFFD700),
+        isBubble: false,
+        isCoin: true,
+      ),
+    );
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -455,7 +453,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     _activePointers[event.pointer] = localPosition;
 
-    if (_activePointers.length >= 2 && _state.intimacy >= 40.0) {
+    if (_activePointers.length >= 2 &&
+        _state.intimacy >= 40.0 * CreatureState.SCALE_FACTOR) {
       _holdTimer?.cancel();
       _holdTimer = null;
       _holdStartPos = null;
@@ -487,7 +486,7 @@ class _HomeScreenState extends State<HomeScreen>
           _isFollowingFinger = false;
         });
 
-        if (_state.intimacy >= 60.0) {
+        if (_state.intimacy >= 60.0 * CreatureState.SCALE_FACTOR) {
           _holdStartPos = localPosition;
           _holdTimer?.cancel();
           _holdTimer = Timer(const Duration(milliseconds: 350), () {
@@ -529,7 +528,7 @@ class _HomeScreenState extends State<HomeScreen>
         _holdTimer = null;
         _holdStartPos = null;
 
-        if (_state.intimacy >= 80.0) {
+        if (_state.intimacy >= 80.0 * CreatureState.SCALE_FACTOR) {
           _followStartPos = localPosition;
           _followTimer?.cancel();
           _followTimer = Timer(const Duration(seconds: 1), () {
@@ -633,18 +632,16 @@ class _HomeScreenState extends State<HomeScreen>
       _audioController.playPuni(_state.softness);
 
       if (Random().nextDouble() < 0.04) {
-        if (_interactionMode == 'drag') {
-          _state.addIntimacy(0.0015);
-        } else {
+        if (_interactionMode == 'pet') {
           _state.addGrowth(0.0005, source: 'petting');
-          _state.addIntimacy(0.004);
+          _state.addIntimacy(0.02);
         }
-        _maybeDropCoin(_physics.center);
       }
 
       if (_interactionMode == 'pet' && localPosition != null) {
         if (Random().nextDouble() < 0.35) {
-          final isHighIntimacy = _state.intimacy >= 60.0;
+          final isHighIntimacy =
+              _state.intimacy >= 60.0 * CreatureState.SCALE_FACTOR;
           final angle = Random().nextDouble() * 2 * pi;
           final speed = 30.0 + Random().nextDouble() * 50.0;
           _touchParticles.add(
@@ -1464,7 +1461,7 @@ class _HomeScreenState extends State<HomeScreen>
                                           icon: Icons.favorite,
                                           label: '親密度',
                                           value:
-                                              '${_state.intimacy.toStringAsFixed(1)}%',
+                                              '${(_state.intimacy / CreatureState.SCALE_FACTOR).toStringAsFixed(1)}%',
                                         ),
                                         _buildCardStatItem(
                                           customIcon: const PuniCoinWidget(
@@ -1878,7 +1875,8 @@ class _HomeScreenState extends State<HomeScreen>
                                   '二本指つまみ',
                                   '2本指でつまんで引っ張り、離すと喜びます。',
                                   '親密度 40%で解放',
-                                  _state.intimacy >= 40.0,
+                                  _state.intimacy >=
+                                      40.0 * CreatureState.SCALE_FACTOR,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
@@ -1886,7 +1884,8 @@ class _HomeScreenState extends State<HomeScreen>
                                   '長押し巨大化',
                                   '1本指で長押しすると一時的に巨大化します。',
                                   '親密度 60%で解放',
-                                  _state.intimacy >= 60.0,
+                                  _state.intimacy >=
+                                      60.0 * CreatureState.SCALE_FACTOR,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
@@ -1894,7 +1893,8 @@ class _HomeScreenState extends State<HomeScreen>
                                   'タップ追従',
                                   '空き地を1秒間長押しすると指へ這い寄ります。',
                                   '親密度 80%で解放',
-                                  _state.intimacy >= 80.0,
+                                  _state.intimacy >=
+                                      80.0 * CreatureState.SCALE_FACTOR,
                                   textThemeColor,
                                 ),
                               ],
@@ -2903,7 +2903,7 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          "レベル進捗: ${_state.exp}/${_state.requiredExp}",
+                          "レベル進捗: ${_state.exp.round()}/${_state.requiredExp}",
                           style: GoogleFonts.notoSansJp(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -3007,7 +3007,7 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          "親密度: ${_state.intimacy.toStringAsFixed(1)} / 100",
+                          "親密度: ${(_state.intimacy / CreatureState.SCALE_FACTOR).toStringAsFixed(0)}",
                           style: GoogleFonts.notoSansJp(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -3016,38 +3016,8 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       ],
                     ),
+                    // Intimacy gauge removed per request (display as raw number)
                     const SizedBox(height: 6),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Stack(
-                        children: [
-                          Container(
-                            height: 8,
-                            color: textThemeColor == Colors.white
-                                ? Colors.white.withOpacity(0.15)
-                                : Colors.black.withOpacity(0.05),
-                          ),
-                          AnimatedFractionallySizedBox(
-                            duration: const Duration(milliseconds: 250),
-                            widthFactor: (_state.intimacy / 100.0).clamp(
-                              0.0,
-                              1.0,
-                            ),
-                            child: Container(
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Color(0xFFEC4899),
-                                    Color(0xFFF43F5E),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
                     const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,

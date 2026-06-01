@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../physics/puni_physics.dart';
 import 'home_screen.dart';
+import '../state/creature_state.dart';
 
 class CreaturePainter extends CustomPainter {
   final PuniPhysics physics;
@@ -23,6 +24,7 @@ class CreaturePainter extends CustomPainter {
   final List<TouchParticle> touchParticles;
   final bool isFollowing;
   final Offset? followTarget;
+  final double renderScale;
 
   CreaturePainter({
     required this.physics,
@@ -44,6 +46,7 @@ class CreaturePainter extends CustomPainter {
     required this.touchParticles,
     this.isFollowing = false,
     this.followTarget,
+    this.renderScale = 1.0,
   });
 
   @override
@@ -62,9 +65,12 @@ class CreaturePainter extends CustomPainter {
     );
 
     final shadowWidth =
-        PuniPhysics.baseRadius * 2.3 * (1.0 - distancePct * 0.45);
+        PuniPhysics.baseRadius * 2.3 * renderScale * (1.0 - distancePct * 0.45);
     final shadowHeight =
-        PuniPhysics.baseRadius * 0.35 * (1.0 - distancePct * 0.55);
+        PuniPhysics.baseRadius *
+        0.35 *
+        renderScale *
+        (1.0 - distancePct * 0.55);
     final shadowOpacity = 0.35 * (1.0 - distancePct * 0.7);
     // Blur on every frame is expensive on some Android GPUs.
     final shadowColor = Colors.black.withOpacity(shadowOpacity * 0.9);
@@ -124,7 +130,7 @@ class CreaturePainter extends CustomPainter {
     }
 
     // 100% Intimacy Neon Glow Aura (drawn behind Puni body)
-    if (intimacy >= 100.0) {
+    if (intimacy >= 100.0 * CreatureState.SCALE_FACTOR) {
       final glowColor = isRainbow ? bodyPaint.color : primaryColor;
       final glowPaint1 = Paint()
         ..color = glowColor.withOpacity(0.18)
@@ -180,9 +186,7 @@ class CreaturePainter extends CustomPainter {
     // 7. DRAW SLEEP Zzz EFFECTS
     if (mood == 'sleep') {
       final double time = DateTime.now().millisecondsSinceEpoch / 1000.0;
-      final textPainter = TextPainter(
-        textDirection: TextDirection.ltr,
-      );
+      final textPainter = TextPainter(textDirection: TextDirection.ltr);
 
       for (int i = 0; i < 3; i++) {
         final double progress = ((time * 0.45 - i * 0.3) % 1.0);
@@ -192,16 +196,25 @@ class CreaturePainter extends CustomPainter {
         final double scale = 0.5 + 0.6 * (1.0 - progress);
 
         final zStyle = TextStyle(
-          color: const Color(0xFF6C5CE7).withOpacity(opacity * 0.7), // Lavender purple
+          color: const Color(
+            0xFF6C5CE7,
+          ).withOpacity(opacity * 0.7), // Lavender purple
           fontSize: 18.0 * scale,
           fontWeight: FontWeight.bold,
         );
 
-        textPainter.text = TextSpan(text: i == 0 ? 'Z' : (i == 1 ? 'Zz' : 'Zzz'), style: zStyle);
+        textPainter.text = TextSpan(
+          text: i == 0 ? 'Z' : (i == 1 ? 'Zz' : 'Zzz'),
+          style: zStyle,
+        );
         textPainter.layout();
         textPainter.paint(
           canvas,
-          center + Offset(xOffset - textPainter.width / 2, yOffset - textPainter.height / 2),
+          center +
+              Offset(
+                xOffset - textPainter.width / 2,
+                yOffset - textPainter.height / 2,
+              ),
         );
       }
     }
@@ -486,7 +499,8 @@ class CreaturePainter extends CustomPainter {
     }
 
     // Draw blushing cheeks if intimacy is 20% or higher and mood is happy, petting, pinching, or inflating
-    if (intimacy >= 20.0 && (mood == 'happy' || isPetting || isPinching || isInflating)) {
+    if (intimacy >= 20.0 * CreatureState.SCALE_FACTOR &&
+        (mood == 'happy' || isPetting || isPinching || isInflating)) {
       final blushColor = (isPinching || isInflating)
           ? const Color(0xFFFF2D55).withOpacity(0.8)
           : const Color(0xFFFF8DA1).withOpacity(0.55);
@@ -494,8 +508,16 @@ class CreaturePainter extends CustomPainter {
         ..color = blushColor
         ..style = PaintingStyle.fill;
       final cheekRadius = (isPinching || isInflating) ? 8.5 : 6.5;
-      canvas.drawCircle(leftEyeCenter + const Offset(-6, 8), cheekRadius, blushPaint);
-      canvas.drawCircle(rightEyeCenter + const Offset(6, 8), cheekRadius, blushPaint);
+      canvas.drawCircle(
+        leftEyeCenter + const Offset(-6, 8),
+        cheekRadius,
+        blushPaint,
+      );
+      canvas.drawCircle(
+        rightEyeCenter + const Offset(6, 8),
+        cheekRadius,
+        blushPaint,
+      );
     }
   }
 
@@ -557,23 +579,25 @@ class CreaturePainter extends CustomPainter {
 
     Path buildSmoothOrbitPath(int movingHead) {
       final path = Path();
-      
+
       final firstIdx = movingHead;
       final secondIdx = (movingHead + 1) % nodeCount;
-      final firstMid = center + (physics.nodePositions[firstIdx] + physics.nodePositions[secondIdx]) / 2;
+      final firstMid =
+          center +
+          (physics.nodePositions[firstIdx] + physics.nodePositions[secondIdx]) /
+              2;
       path.moveTo(firstMid.dx, firstMid.dy);
 
       for (int i = 1; i <= trailLength; i++) {
         final currentIdx = (movingHead + i) % nodeCount;
         final nextIdx = (movingHead + i + 1) % nodeCount;
         final current = center + physics.nodePositions[currentIdx];
-        final mid = center + (physics.nodePositions[currentIdx] + physics.nodePositions[nextIdx]) / 2;
-        path.quadraticBezierTo(
-          current.dx,
-          current.dy,
-          mid.dx,
-          mid.dy,
-        );
+        final mid =
+            center +
+            (physics.nodePositions[currentIdx] +
+                    physics.nodePositions[nextIdx]) /
+                2;
+        path.quadraticBezierTo(current.dx, current.dy, mid.dx, mid.dy);
       }
       return path;
     }
@@ -740,6 +764,7 @@ class CreaturePainter extends CustomPainter {
 
     canvas.restore();
   }
+
   void _drawTouchParticles(Canvas canvas) {
     for (var particle in touchParticles) {
       final alpha = (particle.life / particle.maxLife).clamp(0.0, 1.0);
@@ -750,9 +775,19 @@ class CreaturePainter extends CustomPainter {
       if (particle.isCoin) {
         _drawCoin(canvas, particle.position, 28.0 * (0.5 + 0.5 * alpha), alpha);
       } else if (particle.isBubble) {
-        _drawBubble(canvas, particle.position, 14.0 * (0.5 + 0.5 * alpha), paint);
+        _drawBubble(
+          canvas,
+          particle.position,
+          14.0 * (0.5 + 0.5 * alpha),
+          paint,
+        );
       } else {
-        _drawSparkle(canvas, particle.position, 12.0 * (0.5 + 0.5 * alpha), paint);
+        _drawSparkle(
+          canvas,
+          particle.position,
+          12.0 * (0.5 + 0.5 * alpha),
+          paint,
+        );
       }
     }
   }
@@ -814,14 +849,14 @@ class CreaturePainter extends CustomPainter {
     final x = center.dx;
     final y = center.dy;
     final half = size / 2;
-    
+
     path.moveTo(x, y - half);
     path.quadraticBezierTo(x, y, x + half, y);
     path.quadraticBezierTo(x, y, x, y + half);
     path.quadraticBezierTo(x, y, x - half, y);
     path.quadraticBezierTo(x, y, x, y - half);
     path.close();
-    
+
     canvas.drawPath(path, paint);
   }
 
@@ -854,12 +889,26 @@ class CreaturePreviewPainter extends CustomPainter {
     final bodyPath = Path();
     bodyPath.moveTo(cx - rx, cy);
     // Squishy slime curve
-    bodyPath.cubicTo(cx - rx, cy - ry * 1.25, cx + rx, cy - ry * 1.25, cx + rx, cy);
-    bodyPath.cubicTo(cx + rx, cy + ry * 0.9, cx - rx, cy + ry * 0.9, cx - rx, cy);
+    bodyPath.cubicTo(
+      cx - rx,
+      cy - ry * 1.25,
+      cx + rx,
+      cy - ry * 1.25,
+      cx + rx,
+      cy,
+    );
+    bodyPath.cubicTo(
+      cx + rx,
+      cy + ry * 0.9,
+      cx - rx,
+      cy + ry * 0.9,
+      cx - rx,
+      cy,
+    );
     bodyPath.close();
 
     // 100% Intimacy Neon Glow Aura (drawn behind Puni body)
-    if (intimacy >= 100.0) {
+    if (intimacy >= 100.0 * CreatureState.SCALE_FACTOR) {
       final glowPaint1 = Paint()
         ..color = primaryColor.withOpacity(0.18)
         ..style = PaintingStyle.stroke
@@ -910,7 +959,11 @@ class CreaturePreviewPainter extends CustomPainter {
     void drawEye(Offset center) {
       canvas.drawRRect(
         RRect.fromRectAndRadius(
-          Rect.fromCenter(center: center, width: size.width * 0.08, height: size.height * 0.16),
+          Rect.fromCenter(
+            center: center,
+            width: size.width * 0.08,
+            height: size.height * 0.16,
+          ),
           Radius.circular(size.width * 0.02),
         ),
         eyePaint,
@@ -921,13 +974,21 @@ class CreaturePreviewPainter extends CustomPainter {
     drawEye(rightEyeCenter);
 
     // Blushing cheeks
-    if (intimacy >= 20.0) {
+    if (intimacy >= 20.0 * CreatureState.SCALE_FACTOR) {
       final blushPaint = Paint()
         ..color = const Color(0xFFFF8DA1).withOpacity(0.55)
         ..style = PaintingStyle.fill;
       final cheekRadius = size.width * 0.08;
-      canvas.drawCircle(leftEyeCenter + Offset(-size.width * 0.07, size.height * 0.08), cheekRadius, blushPaint);
-      canvas.drawCircle(rightEyeCenter + Offset(size.width * 0.07, size.height * 0.08), cheekRadius, blushPaint);
+      canvas.drawCircle(
+        leftEyeCenter + Offset(-size.width * 0.07, size.height * 0.08),
+        cheekRadius,
+        blushPaint,
+      );
+      canvas.drawCircle(
+        rightEyeCenter + Offset(size.width * 0.07, size.height * 0.08),
+        cheekRadius,
+        blushPaint,
+      );
     }
   }
 
