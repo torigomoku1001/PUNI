@@ -267,7 +267,10 @@ class PuniPhysics {
         } else {
           // Arrived: hover/hovering float
           double timeSec = DateTime.now().millisecondsSinceEpoch / 1000.0;
-          Offset hover = Offset(cos(timeSec * 2.0) * 8.0, sin(timeSec * 1.5) * 8.0);
+          Offset hover = Offset(
+            cos(timeSec * 2.0) * 8.0,
+            sin(timeSec * 1.5) * 8.0,
+          );
           centerVelocity = Offset.lerp(centerVelocity, hover, 0.05)!;
         }
         center += centerVelocity * dt;
@@ -330,7 +333,8 @@ class PuniPhysics {
 
         for (int i = 0; i < nodeCount; i++) {
           Offset baseOffset = targetOffsets[i];
-          double dot = baseOffset.dx * pinchDir.dx + baseOffset.dy * pinchDir.dy;
+          double dot =
+              baseOffset.dx * pinchDir.dx + baseOffset.dy * pinchDir.dy;
           Offset parallelPart = pinchDir * dot;
           Offset perpPart = baseOffset - parallelPart;
           targetOffsets[i] =

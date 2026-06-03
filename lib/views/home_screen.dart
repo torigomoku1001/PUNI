@@ -26,6 +26,7 @@ class FoodBubble {
   Offset velocity;
   final double radius = 8.0; // Slightly smaller food
   int bounces = 0;
+  double lifeTime = 0.0;
   final String foodType;
   final Color color;
 
@@ -39,6 +40,7 @@ class FoodBubble {
   void update(double dt, Offset gravity, double bottomLimit) {
     velocity += gravity * dt;
     position += velocity * dt;
+    lifeTime += dt;
 
     if (position.dy > bottomLimit - radius) {
       position = Offset(position.dx, bottomLimit - radius);
@@ -107,6 +109,7 @@ class _HomeScreenState extends State<HomeScreen>
   // Petting touch particles
   final List<TouchParticle> _touchParticles = [];
   DateTime? _lastEatAt;
+  DateTime? _pettingStartTime;
 
   // Puni Colors (Peach / Rose base)
   Color _primaryColor = const Color(0xFFD2D2D8);
@@ -234,12 +237,10 @@ class _HomeScreenState extends State<HomeScreen>
       _lastKnownLevel = _state.level;
     }
 
-    if (!_state.isRainbow) {
-      setState(() {
-        _primaryColor = _state.creatureColor;
-        _secondaryColor = _state.creatureColor.withOpacity(0.7);
-      });
-    }
+    setState(() {
+      _primaryColor = _state.creatureColor;
+      _secondaryColor = _state.creatureColor.withOpacity(0.7);
+    });
   }
 
   void _triggerLevelUpFeedback() {
@@ -360,15 +361,38 @@ class _HomeScreenState extends State<HomeScreen>
     // Update food particles
     final bottomLimit =
         boundarySize.height - 210.0; // Keep food above action panel & banner ad
+
+    // ★新仕様：スライムの物理挙動（PuniPhysics）と全く同じ位置に、ご飯用の「透明な壁」を定義します
+    const double wallMargin = 20.0;
+    final double leftWall = wallMargin;
+    final double rightWall = boundarySize.width - wallMargin;
+
     final toRemove = <FoodBubble>[];
     for (var bubble in _foodBubbles) {
       bubble.update(dt, _gravity, bottomLimit);
+
+      // ★新仕様：ご飯が左右の「透明な壁」にぶつかった時のバウンド処理
+      if (bubble.position.dx < leftWall + bubble.radius) {
+        // 左の壁にヒット
+        bubble.position = Offset(leftWall + bubble.radius, bubble.position.dy);
+        bubble.velocity = Offset(
+          bubble.velocity.dx.abs() * 0.5,
+          bubble.velocity.dy * 0.8,
+        );
+      } else if (bubble.position.dx > rightWall - bubble.radius) {
+        // 右の壁にヒット
+        bubble.position = Offset(rightWall - bubble.radius, bubble.position.dy);
+        bubble.velocity = Offset(
+          -bubble.velocity.dx.abs() * 0.5,
+          bubble.velocity.dy * 0.8,
+        );
+      }
 
       final distToCreature = (bubble.position - _physics.center).distance;
       if (distToCreature < PuniPhysics.baseRadius * 1.3) {
         toRemove.add(bubble);
         _eatFood(bubble.foodType);
-      } else if (bubble.bounces > 2) {
+      } else if (bubble.lifeTime >= 5.0) {
         toRemove.add(bubble);
       }
     }
@@ -393,12 +417,16 @@ class _HomeScreenState extends State<HomeScreen>
 
     _audioController.playFeedVoice();
     _state.triggerMood('eating', duration: const Duration(seconds: 2));
-    _state.addGrowth(
-      0.02,
-      source: 'feed',
-      foodType: foodType,
-    ); // Growth from eating
-    _state.addIntimacy(0.02); // Add intimacy when fed (extremely gradual)
+
+    if (foodType == 'medicine_bleach') {
+      _state.applyMedicine('bleach');
+      _state.addGrowth(0.02, source: 'feed', foodType: 'default');
+    } else if (foodType == 'medicine_desaturate') {
+      _state.applyMedicine('desaturate');
+      _state.addGrowth(0.02, source: 'feed', foodType: 'default');
+    } else {
+      _state.addGrowth(0.02, source: 'feed', foodType: foodType);
+    }
 
     // Push boundary nodes outward wobbly
     final impulse = _state.isDragging ? 180.0 : 260.0;
@@ -453,8 +481,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     _activePointers[event.pointer] = localPosition;
 
-    if (_activePointers.length >= 2 &&
-        _state.intimacy >= 40.0 * CreatureState.SCALE_FACTOR) {
+    if (_activePointers.length >= 2 && _state.intimacy >= 100.0) {
       _holdTimer?.cancel();
       _holdTimer = null;
       _holdStartPos = null;
@@ -486,7 +513,7 @@ class _HomeScreenState extends State<HomeScreen>
           _isFollowingFinger = false;
         });
 
-        if (_state.intimacy >= 60.0 * CreatureState.SCALE_FACTOR) {
+        if (_state.intimacy >= 150.0) {
           _holdStartPos = localPosition;
           _holdTimer?.cancel();
           _holdTimer = Timer(const Duration(milliseconds: 350), () {
@@ -516,7 +543,9 @@ class _HomeScreenState extends State<HomeScreen>
             isPetting: true,
             touchPosition: localPosition,
           );
-          if (_state.energy <= 0.0) {
+          _pettingStartTime = DateTime.now();
+          final displayEnergy = double.parse(_state.energy.toStringAsFixed(1));
+          if (displayEnergy < 0.2) {
             _state.triggerMood('angry', duration: const Duration(seconds: 2));
           } else {
             _state.triggerMood('happy', duration: const Duration(seconds: 2));
@@ -528,7 +557,7 @@ class _HomeScreenState extends State<HomeScreen>
         _holdTimer = null;
         _holdStartPos = null;
 
-        if (_state.intimacy >= 80.0 * CreatureState.SCALE_FACTOR) {
+        if (_state.intimacy >= 200.0) {
           _followStartPos = localPosition;
           _followTimer?.cancel();
           _followTimer = Timer(const Duration(seconds: 1), () {
@@ -631,17 +660,9 @@ class _HomeScreenState extends State<HomeScreen>
 
       _audioController.playPuni(_state.softness);
 
-      if (Random().nextDouble() < 0.04) {
-        if (_interactionMode == 'pet') {
-          _state.addGrowth(0.0005, source: 'petting');
-          _state.addIntimacy(0.02);
-        }
-      }
-
       if (_interactionMode == 'pet' && localPosition != null) {
         if (Random().nextDouble() < 0.35) {
-          final isHighIntimacy =
-              _state.intimacy >= 60.0 * CreatureState.SCALE_FACTOR;
+          final isHighIntimacy = _state.intimacy >= 60.0;
           final angle = Random().nextDouble() * 2 * pi;
           final speed = 30.0 + Random().nextDouble() * 50.0;
           _touchParticles.add(
@@ -683,7 +704,10 @@ class _HomeScreenState extends State<HomeScreen>
     final wasPetting = _state.isPetting;
     final wasPinching = _state.isPinching;
     final wasInflating = _state.isInflating;
-    final hasEnergyAtRelease = _state.energy > 0.0;
+    final displayEnergy = double.parse(_state.energy.toStringAsFixed(1));
+    final hasEnergyAtRelease = (wasPinching || wasInflating)
+        ? displayEnergy >= 1.0
+        : (wasPetting ? displayEnergy >= 0.2 : displayEnergy > 0.0);
 
     if (_activePointers.length < 2 && wasPinching) {
       _initialPinchDistance = 0.0;
@@ -695,12 +719,14 @@ class _HomeScreenState extends State<HomeScreen>
         touchPosition: null,
       );
       _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
-      if (_state.energy <= 0.0) {
+
+      // ★つまみアクション終了
+      _state.addGrowth(0.0, source: 'pinch');
+
+      if (_state.energy < 1.0) {
         _state.triggerMood('sad', duration: const Duration(seconds: 3));
       } else {
         _state.triggerMood('happy', duration: const Duration(seconds: 3));
-        _state.addGrowth(0.002, source: 'pinch');
-        _state.addIntimacy(0.004);
         _maybeDropCoin(_physics.center);
       }
     } else if (_activePointers.isEmpty) {
@@ -709,17 +735,32 @@ class _HomeScreenState extends State<HomeScreen>
         double flingSpeed = _physics.centerVelocity.distance;
         if (flingSpeed > 320.0) {
           _physics.centerVelocity = _physics.centerVelocity * 1.2;
-          _audioController.playFlingVoice(hasEnergy: _state.energy > 0.0);
+          _audioController.playFlingVoice(hasEnergy: _state.energy >= 2.0);
           didPlayFling = true;
-          _state.addIntimacy(0.01);
-          if (_state.energy <= 0.0) {
+
+          bool hadEnergy = _state.energy >= 2.0;
+
+          double targetIntimacy = (flingSpeed < 1700.0)
+              ? 0.5
+              : (flingSpeed >= 2300.0 ? 1.0 : 0.75);
+          double targetExp = (flingSpeed < 1700.0)
+              ? 50.0
+              : (flingSpeed >= 2300.0 ? 150.0 : 100.0);
+
+          _state.addGrowth(
+            0.0,
+            source: 'fling',
+            customIntimacy: targetIntimacy,
+            customExp: targetExp,
+          );
+
+          if (!hadEnergy) {
             _state.triggerMood('sad', duration: const Duration(seconds: 3));
           } else {
             _state.triggerMood(
               'surprised',
               duration: const Duration(seconds: 3),
             );
-            _state.addGrowth(0.002, source: 'fling');
             _maybeDropCoin(_physics.center);
           }
         }
@@ -735,13 +776,23 @@ class _HomeScreenState extends State<HomeScreen>
       if (wasPetting || wasInflating || (wasDragging && !didPlayFling)) {
         _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
       }
+      if (wasPetting) {
+        // ★撫でるアクション終了
+        if (_pettingStartTime != null) {
+          final duration = DateTime.now().difference(_pettingStartTime!);
+          if (duration.inMilliseconds >= 1800) {
+            _state.addGrowth(0.0, source: 'petting');
+          }
+        }
+        _pettingStartTime = null;
+      }
       if (wasInflating) {
-        if (_state.energy <= 0.0) {
+        // ★巨大化アクション終了
+        _state.addGrowth(0.0, source: 'balloon');
+        if (_state.energy < 1.0) {
           _state.triggerMood('sad', duration: const Duration(seconds: 3));
         } else {
           _state.triggerMood('happy', duration: const Duration(seconds: 3));
-          _state.addGrowth(0.002, source: 'balloon');
-          _state.addIntimacy(0.004);
           _maybeDropCoin(_physics.center);
         }
       }
@@ -768,7 +819,10 @@ class _HomeScreenState extends State<HomeScreen>
     final wasPetting = _state.isPetting;
     final wasPinching = _state.isPinching;
     final wasInflating = _state.isInflating;
-    final hasEnergyAtRelease = _state.energy > 0.0;
+    final displayEnergy = double.parse(_state.energy.toStringAsFixed(1));
+    final hasEnergyAtRelease = (wasPinching || wasInflating)
+        ? displayEnergy >= 1.0
+        : (wasPetting ? displayEnergy >= 0.2 : displayEnergy > 0.0);
 
     if (_activePointers.length < 2 && wasPinching) {
       _initialPinchDistance = 0.0;
@@ -779,14 +833,11 @@ class _HomeScreenState extends State<HomeScreen>
         isInflating: false,
         touchPosition: null,
       );
+
+      // つまみアクション中断時も加算処理を通す
+      _state.addGrowth(0.0, source: 'pinch');
+
       _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
-      if (_state.energy <= 0.0) {
-        _state.triggerMood('sad', duration: const Duration(seconds: 3));
-      } else {
-        _state.triggerMood('happy', duration: const Duration(seconds: 3));
-        _state.addGrowth(0.002, source: 'pinch');
-        _state.addIntimacy(0.004);
-      }
     } else if (_activePointers.isEmpty) {
       _state.setInteraction(
         isDragging: false,
@@ -795,17 +846,21 @@ class _HomeScreenState extends State<HomeScreen>
         isInflating: false,
         touchPosition: null,
       );
+
+      if (wasPetting) {
+        if (_pettingStartTime != null) {
+          final duration = DateTime.now().difference(_pettingStartTime!);
+          if (duration.inMilliseconds >= 1800) {
+            _state.addGrowth(0.0, source: 'petting');
+          }
+        }
+        _pettingStartTime = null;
+      } else if (wasInflating) {
+        _state.addGrowth(0.0, source: 'balloon');
+      }
+
       if (wasPetting || wasInflating || wasDragging) {
         _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
-      }
-      if (wasInflating) {
-        if (_state.energy <= 0.0) {
-          _state.triggerMood('sad', duration: const Duration(seconds: 3));
-        } else {
-          _state.triggerMood('happy', duration: const Duration(seconds: 3));
-          _state.addGrowth(0.002, source: 'balloon');
-          _state.addIntimacy(0.004);
-        }
       }
     }
   }
@@ -892,10 +947,18 @@ class _HomeScreenState extends State<HomeScreen>
                 'color': const Color(0xFFFF2D85),
               },
               {
-                'name': '白のご飯',
-                'type': 'white',
-                'cost': 10,
-                'color': const Color(0xFFFFFFFF),
+                'name': '脱色薬',
+                'type': 'medicine_bleach',
+                'cost': 50,
+                'color': const Color(0x00FFFFFF), // 透明
+                'requiredIntimacy': 250.0,
+              },
+              {
+                'name': '薄くナール',
+                'type': 'medicine_desaturate',
+                'cost': 15,
+                'color': const Color(0xFFE0E0E0),
+                'requiredIntimacy': 300.0,
               },
             ];
 
@@ -993,6 +1056,11 @@ class _HomeScreenState extends State<HomeScreen>
                         final type = food['type'] as String;
                         final cost = food['cost'] as int;
                         final color = food['color'] as Color;
+                        final requiredIntimacy =
+                            food.containsKey('requiredIntimacy')
+                            ? food['requiredIntimacy'] as double
+                            : 0.0;
+                        final isLocked = _state.intimacy < requiredIntimacy;
                         final canAfford = coins >= cost;
 
                         return Card(
@@ -1001,27 +1069,49 @@ class _HomeScreenState extends State<HomeScreen>
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(16),
                             side: BorderSide(
-                              color: color.withOpacity(0.3),
+                              color: (type == 'medicine_bleach' || type == 'medicine_desaturate')
+                                  ? Colors.black.withOpacity(0.8)
+                                  : color.withOpacity(0.3),
                               width: 1.5,
                             ),
                           ),
-                          color: color.withOpacity(0.05),
+                          color: (type == 'medicine_bleach' || type == 'medicine_desaturate')
+                              ? Colors.black.withOpacity(0.05)
+                              : color.withOpacity(0.05),
                           child: ListTile(
-                            leading: Container(
-                              width: 32,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: color,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: color.withOpacity(0.5),
-                                    blurRadius: 6,
-                                    spreadRadius: 1,
+                            leading: type == 'medicine_bleach'
+                                ? ClipOval(
+                                    child: Image.asset(
+                                      'assets/images/medicine_bleach.png',
+                                      width: 32,
+                                      height: 32,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  )
+                                : type == 'medicine_desaturate'
+                                ? ClipOval(
+                                    child: Image.asset(
+                                      'assets/images/medicine_desaturate.png',
+                                      width: 32,
+                                      height: 32,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  )
+                                : Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: color,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: color.withOpacity(0.5),
+                                          blurRadius: 6,
+                                          spreadRadius: 1,
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ],
-                              ),
-                            ),
                             title: Text(
                               name,
                               style: GoogleFonts.notoSansJp(
@@ -1031,90 +1121,112 @@ class _HomeScreenState extends State<HomeScreen>
                             subtitle: Text(
                               type == 'default'
                                   ? '配合色に影響なし'
-                                  : '${type.toUpperCase()}の配合色を増やす',
+                                  : type == 'medicine_bleach'
+                                  ? 'PUNIが初期の色にリセット'
+                                  : type == 'medicine_desaturate'
+                                  ? '色の濃さを少し落とします'
+                                  : '${name.replaceAll('のご飯', '')}の配合色を少し増やす',
                               style: GoogleFonts.notoSansJp(fontSize: 11),
                             ),
-                            trailing: ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: canAfford
-                                    ? color
-                                    : Colors.grey,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                ),
-                              ),
-                              onPressed: () {
-                                if (_state.feedRemainingToday <= 0) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        '今日のえさやり上限(15回)に達しました。',
-                                        style: GoogleFonts.notoSansJp(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      backgroundColor:
-                                          CupertinoColors.systemRed,
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  Navigator.pop(context);
-                                  return;
-                                }
-
-                                if (cost > 0 && !canAfford) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'ぷにコインが足りません！',
-                                        style: GoogleFonts.notoSansJp(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      backgroundColor:
-                                          CupertinoColors.systemRed,
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                final success = _state.consumeFeedAction();
-                                if (success) {
-                                  if (cost > 0) {
-                                    _state.spendCoins(cost);
-                                  }
-                                  _spawnColoredFood(type, color);
-                                  setModalState(() {});
-                                  setState(() {});
-                                }
-                                Navigator.pop(context);
-                              },
-                              child: cost == 0
-                                  ? Text(
-                                      '無料',
+                            trailing: isLocked
+                                ? Padding(
+                                    padding: const EdgeInsets.only(right: 8.0),
+                                    child: Text(
+                                      '🔒 ${requiredIntimacy.toInt()}ptで解放',
                                       style: GoogleFonts.notoSansJp(
+                                        fontSize: 12,
                                         fontWeight: FontWeight.bold,
+                                        color: Colors.grey.shade600,
                                       ),
-                                    )
-                                  : Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Text(
-                                          '$cost',
-                                          style: GoogleFonts.notoSansJp(
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        const PuniCoinWidget(size: 14),
-                                      ],
                                     ),
-                            ),
+                                  )
+                                : ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: canAfford
+                                          ? color
+                                          : Colors.grey,
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      if (_state.feedRemainingToday <= 0) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              '今日のご飯上限(15回)に達しました。',
+                                              style: GoogleFonts.notoSansJp(
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            backgroundColor:
+                                                CupertinoColors.systemRed,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                        Navigator.pop(context);
+                                        return;
+                                      }
+
+                                      if (cost > 0 && !canAfford) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'ぷにコインが足りません！',
+                                              style: GoogleFonts.notoSansJp(
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            backgroundColor:
+                                                CupertinoColors.systemRed,
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                        return;
+                                      }
+                                      final success = _state
+                                          .consumeFeedAction();
+                                      if (success) {
+                                        if (cost > 0) {
+                                          _state.spendCoins(cost);
+                                        }
+
+                                        _spawnColoredFood(type, color);
+
+                                        setModalState(() {});
+                                        setState(() {});
+                                      }
+                                      Navigator.pop(context);
+                                    },
+                                    child: cost == 0
+                                        ? Text(
+                                            '無料',
+                                            style: GoogleFonts.notoSansJp(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          )
+                                        : Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                '$cost',
+                                                style: GoogleFonts.notoSansJp(
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              const PuniCoinWidget(size: 14),
+                                            ],
+                                          ),
+                                  ),
                           ),
                         );
                       },
@@ -1461,7 +1573,7 @@ class _HomeScreenState extends State<HomeScreen>
                                           icon: Icons.favorite,
                                           label: '親密度',
                                           value:
-                                              '${(_state.intimacy / CreatureState.SCALE_FACTOR).toStringAsFixed(1)}%',
+                                              '${(_state.intimacy).toStringAsFixed(2)}pt',
                                         ),
                                         _buildCardStatItem(
                                           customIcon: const PuniCoinWidget(
@@ -1624,7 +1736,7 @@ class _HomeScreenState extends State<HomeScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '動画視聴特典！50ぷにコインを獲得しました！',
+            '動画視聴特典！25ぷにコインを獲得しました！',
             style: GoogleFonts.notoSansJp(
               fontWeight: FontWeight.bold,
               color: Colors.black,
@@ -1874,27 +1986,24 @@ class _HomeScreenState extends State<HomeScreen>
                                 _buildPlayRow(
                                   '二本指つまみ',
                                   '2本指でつまんで引っ張り、離すと喜びます。',
-                                  '親密度 40%で解放',
-                                  _state.intimacy >=
-                                      40.0 * CreatureState.SCALE_FACTOR,
+                                  '親密度 100ptで解放', // ★ 40% ➔ 100%
+                                  _state.intimacy >= 100.0,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
                                 _buildPlayRow(
                                   '長押し巨大化',
                                   '1本指で長押しすると一時的に巨大化します。',
-                                  '親密度 60%で解放',
-                                  _state.intimacy >=
-                                      60.0 * CreatureState.SCALE_FACTOR,
+                                  '親密度 150ptで解放', // ★ 60% ➔ 150%
+                                  _state.intimacy >= 150.0,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
                                 _buildPlayRow(
                                   'タップ追従',
                                   '空き地を1秒間長押しすると指へ這い寄ります。',
-                                  '親密度 80%で解放',
-                                  _state.intimacy >=
-                                      80.0 * CreatureState.SCALE_FACTOR,
+                                  '親密度 200ptで解放', // ★ 80% ➔ 200%
+                                  _state.intimacy >= 200.0,
                                   textThemeColor,
                                 ),
                               ],
@@ -1912,7 +2021,7 @@ class _HomeScreenState extends State<HomeScreen>
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  '・ショップのご飯は親密度に関わらずいつでも食べられます！食べるとその色に徐々に変化します。\n・なでる・遊ぶなどの通常のお世話では色は変化しません。\n・「色ロック（親密度20%で解放）」を有効にしている間は、ご飯を食べても今の色を綺麗にキープできます。',
+                                  '・ショップのご飯は親密度に関わらずいつでも食べられます！食べるとその色に徐々に変化します。\n・なでる・遊ぶなどの通常のお世話では色は変化しません。\n・「色ロック（親密度50ptで解放）」を有効にしている間は、ご飯を食べても今の色を綺麗にキープできます。',
                                   style: GoogleFonts.notoSansJp(
                                     fontSize: 12,
                                     color: textThemeColor,
@@ -1966,11 +2075,6 @@ class _HomeScreenState extends State<HomeScreen>
                                     _buildColorTag(
                                       'ピンクのご飯',
                                       const Color(0xFFFF2D85),
-                                      textThemeColor,
-                                    ),
-                                    _buildColorTag(
-                                      '白のご飯',
-                                      const Color(0xFFFFFFFF),
                                       textThemeColor,
                                     ),
                                   ],
@@ -2457,14 +2561,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   LinearGradient _getBackgroundGradient() {
     int hour = DateTime.now().hour;
-    if (_state.isRainbow) {
-      return const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF23023B), Color(0xFF07000F)],
-      );
-    }
 
+    // ★修正：_state.isRainbowのチェックを削除し、時間帯によるグラデーションのみにする
     if (hour >= 5 && hour < 10) {
       return const LinearGradient(
         begin: Alignment.topCenter,
@@ -2484,7 +2582,7 @@ class _HomeScreenState extends State<HomeScreen>
         colors: [Color(0xFFFCE4EC), Color(0xFFE8EAF6)],
       );
     } else {
-      // Nighttime: keep it light white/blue gradient
+      // 夜間：夜らしい落ち着いた色合いにするか、引き続きライトな色にするかは自由です
       return const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
@@ -2494,9 +2592,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Color _getTextColor() {
-    if (_state.isRainbow) {
-      return Colors.white.withOpacity(0.9);
-    }
+    // ★修正：isRainbow の判定を削除し、常にメインの文字色を返すようにしました
     return const Color(0xFF2C3E50);
   }
 
@@ -2509,6 +2605,18 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     return _lastHealthSyncSucceeded! ? '同期OK' : '同期NG';
+  }
+
+  String? _getNextIntimacyEventText() {
+    final intimacy = _state.intimacy;
+    if (intimacy < 50 && intimacy >= 45) return 'もう少しで【色ロック】解放…！';
+    if (intimacy < 100 && intimacy >= 95) return 'もう少しで【二本指つまみ】を覚えそう…！';
+    if (intimacy < 150 && intimacy >= 145) return 'もう少しで【長押し巨大化】を覚えそう…！';
+    if (intimacy < 200 && intimacy >= 195) return 'もう少しで【タップ追従】を覚えそう…！';
+    if (intimacy < 250 && intimacy >= 245) return 'もう少しで【脱色薬】が入荷しそう…！';
+    if (intimacy < 300 && intimacy >= 295) return 'もう少しで【薄くナール】が入荷しそう…！';
+    if (intimacy < 350 && intimacy >= 345) return 'もう少しでPUNIの体が光りだすかも…！';
+    return null;
   }
 
   Color _getHealthSyncStatusColor() {
@@ -2563,86 +2671,135 @@ class _HomeScreenState extends State<HomeScreen>
     final sparkleProgress = (_levelUpSparkleTimer / _levelUpSparkleDuration)
         .clamp(0.0, 1.0);
 
+    // スライムの相対位置を計算
+    final screenWidth = media.size.width;
+    final screenHeight = media.size.height;
+
+    final double relativeX = screenWidth > 0
+        ? (_physics.center.dx / screenWidth).clamp(0.0, 1.0)
+        : 0.5;
+    final double relativeY = screenHeight > 0
+        ? (_physics.center.dy / screenHeight).clamp(0.0, 1.0)
+        : 0.5;
+
+    final slimeAlignment = FractionalOffset(relativeX, relativeY);
+
     return Scaffold(
+      // ★Scaffoldの直下は通常のStackにして、ボタンが拡大されないようにします
       body: Stack(
         children: [
-          // 1. Dynamic Background
-          AnimatedContainer(
-            duration: const Duration(seconds: 2),
-            decoration: BoxDecoration(gradient: _getBackgroundGradient()),
-          ),
-
-          // 2. Main Painter Area
+          // ーーー 【拡大するエリア】ここから ーーー
           Positioned.fill(
-            child: Listener(
-              onPointerDown: _handlePointerDown,
-              onPointerMove: _handlePointerMove,
-              onPointerUp: _handlePointerUp,
-              onPointerCancel: _handlePointerCancel,
-              child: CustomPaint(
-                painter: CreaturePainter(
-                  physics: _physics,
-                  mood: _state.mood,
-                  shape: _state.shape,
-                  softness: _state.softness,
-                  energy: _state.energy,
-                  primaryColor: _primaryColor,
-                  secondaryColor: _secondaryColor,
-                  touchPosition: _state.touchPosition,
-                  isBlinking: _isBlinking,
-                  isRainbow: _state.isRainbow,
-                  isCharging: _isCharging,
-                  isPetting: _state.isPetting,
-                  isPinching: _state.isPinching,
-                  isInflating: _state.isInflating,
-                  intimacy: _state.intimacy,
-                  isColorLocked: _state.isColorLocked,
-                  touchParticles: _touchParticles,
-                  isFollowing: _isFollowingFinger,
-                  followTarget: _followTarget,
-                ),
-                child: Container(),
-              ),
-            ),
-          ),
-
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _LevelUpSparklePainter(
-                  center: _physics.center,
-                  progress: sparkleProgress,
-                  baseRadius: PuniPhysics.baseRadius,
-                ),
-              ),
-            ),
-          ),
-
-          // 3. Food Particle Renderer
-          ..._foodBubbles.map((bubble) {
-            return Positioned(
-              left: bubble.position.dx - bubble.radius,
-              top: bubble.position.dy - bubble.radius,
-              child: Container(
-                width: bubble.radius * 2,
-                height: bubble.radius * 2,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [Colors.white, bubble.color.withOpacity(0.85)],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: bubble.color.withOpacity(0.4),
-                      blurRadius: 4,
+            child: AnimatedScale(
+              scale: _interactionMode == 'pet' ? 2.5 : 1.0,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              alignment: slimeAlignment,
+              child: Stack(
+                children: [
+                  // 1. Dynamic Background
+                  AnimatedContainer(
+                    duration: const Duration(seconds: 2),
+                    decoration: BoxDecoration(
+                      gradient: _getBackgroundGradient(),
                     ),
-                  ],
-                ),
-              ),
-            );
-          }),
+                  ),
 
-          // 4. Top HUD
+                  // 2. Main Painter Area
+                  Positioned.fill(
+                    child: Listener(
+                      onPointerDown: _handlePointerDown,
+                      onPointerMove: _handlePointerMove,
+                      onPointerUp: _handlePointerUp,
+                      onPointerCancel: _handlePointerCancel,
+                      child: CustomPaint(
+                        painter: CreaturePainter(
+                          physics: _physics,
+                          renderScale: _inflationScale,
+                          mood: _state.mood,
+                          shape: _state.shape,
+                          softness: _state.softness,
+                          energy: _state.energy,
+                          primaryColor: _primaryColor,
+                          secondaryColor: _secondaryColor,
+                          touchPosition: _state.touchPosition,
+                          isBlinking: _isBlinking,
+                          isCharging: _isCharging,
+                          isPetting: _state.isPetting,
+                          isPinching: _state.isPinching,
+                          isInflating: _state.isInflating,
+                          intimacy: _state.intimacy,
+                          isColorLocked: _state.isColorLocked,
+                          touchParticles: _touchParticles,
+                          isFollowing: _isFollowingFinger,
+                          followTarget: _followTarget,
+                        ),
+                        child: Container(),
+                      ),
+                    ),
+                  ),
+
+                  // レベルアップのエフェクト
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: _LevelUpSparklePainter(
+                          center: _physics.center,
+                          progress: sparkleProgress,
+                          baseRadius: PuniPhysics.baseRadius,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 3. Food Particle Renderer（ご飯の粒）
+                  ..._foodBubbles.map((bubble) {
+                    return Positioned(
+                      left: bubble.position.dx - bubble.radius,
+                      top: bubble.position.dy - bubble.radius,
+                      child:
+                          bubble.foodType == 'medicine_bleach' ||
+                              bubble.foodType == 'medicine_desaturate'
+                          ? ClipOval(
+                              child: Image.asset(
+                                bubble.foodType == 'medicine_bleach'
+                                    ? 'assets/images/medicine_bleach.png'
+                                    : 'assets/images/medicine_desaturate.png',
+                                width: bubble.radius * 2,
+                                height: bubble.radius * 2,
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                          : Container(
+                              width: bubble.radius * 2,
+                              height: bubble.radius * 2,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: RadialGradient(
+                                  colors: [
+                                    Colors.white,
+                                    bubble.color.withOpacity(0.85),
+                                  ],
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: bubble.color.withOpacity(0.4),
+                                    blurRadius: 4,
+                                  ),
+                                ],
+                              ),
+                            ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          // ーーー 【拡大するエリア】ここまで ーーー
+
+          // ーーー 【拡大しないエリア】UIやボタンは通常のサイズをキープ ーーー
+
+          // 4. Top HUD（画面上のステータス等）
           Positioned(
             top: media.padding.top + 16,
             left: 20,
@@ -2678,17 +2835,14 @@ class _HomeScreenState extends State<HomeScreen>
                                 GestureDetector(
                                   onTap: _openProfileCardSheet,
                                   child: Container(
-                                    clipBehavior: Clip
-                                        .antiAlias, // Clip the rotated child
+                                    clipBehavior: Clip.antiAlias,
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 14,
                                       vertical: 8,
                                     ),
                                     decoration: BoxDecoration(
-                                      color: Colors.black, // Sleek black card
-                                      borderRadius: BorderRadius.circular(
-                                        10,
-                                      ), // Weaker rounding
+                                      color: Colors.black,
+                                      borderRadius: BorderRadius.circular(10),
                                       border: Border.all(
                                         color: Colors.white.withOpacity(0.2),
                                         width: 1.0,
@@ -2704,7 +2858,6 @@ class _HomeScreenState extends State<HomeScreen>
                                     child: Stack(
                                       clipBehavior: Clip.none,
                                       children: [
-                                        // Slanted X background logo
                                         Positioned(
                                           right: -8,
                                           bottom: -22,
@@ -2779,13 +2932,13 @@ class _HomeScreenState extends State<HomeScreen>
                                   padding: EdgeInsets.zero,
                                   minSize: 24,
                                   onPressed: () {
-                                    if (_state.intimacy < 20.0) {
+                                    if (_state.intimacy < 50.0) {
                                       ScaffoldMessenger.of(
                                         context,
                                       ).showSnackBar(
                                         SnackBar(
                                           content: Text(
-                                            '親密度が20%以上で色ロック機能が解放されます。',
+                                            '親密度が50pt以上で色ロック機能が解放されます。',
                                             style: GoogleFonts.notoSansJp(
                                               fontWeight: FontWeight.bold,
                                             ),
@@ -2887,13 +3040,28 @@ class _HomeScreenState extends State<HomeScreen>
                                 ],
                               ),
                             ),
+                            const SizedBox(height: 6),
+                            // ぷにコイン表示
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const PuniCoinWidget(size: 20),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${_state.puniCoins}',
+                                  style: GoogleFonts.notoSansJp(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.amber.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
-
-                    // 1. Level Progress Section
                     Row(
                       children: [
                         const Icon(
@@ -2903,7 +3071,7 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          "レベル進捗: ${_state.exp.round()}/${_state.requiredExp}",
+                          "レベル進捗: ${_state.exp.round()}/${_state.requiredExp.round()}",
                           style: GoogleFonts.notoSansJp(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
@@ -2943,8 +3111,6 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 12),
-
-                    // 2. Puni Energy Section
                     Row(
                       children: [
                         const Icon(
@@ -2996,8 +3162,6 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 12),
-
-                    // 3. Intimacy Section
                     Row(
                       children: [
                         const Icon(
@@ -3007,16 +3171,29 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          "親密度: ${(_state.intimacy / CreatureState.SCALE_FACTOR).toStringAsFixed(0)}",
+                          "親密度: ${(_state.intimacy).toStringAsFixed(2)} pt",
                           style: GoogleFonts.notoSansJp(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
                             color: textThemeColor,
                           ),
                         ),
+                        if (_getNextIntimacyEventText() != null) ...[
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _getNextIntimacyEventText()!,
+                              style: GoogleFonts.notoSansJp(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: const Color(0xFFEC4899),
+                              ),
+                              overflow: TextOverflow.visible,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
-                    // Intimacy gauge removed per request (display as raw number)
                     const SizedBox(height: 6),
                     const SizedBox(height: 12),
                     Row(
@@ -3109,61 +3286,64 @@ class _HomeScreenState extends State<HomeScreen>
                             scrollDirection: Axis.horizontal,
                             physics: const BouncingScrollPhysics(),
                             child: Row(
-                              children: [0, 20, 40, 60, 80, 100].map((
-                                intimacyValue,
-                              ) {
-                                final intimacy = intimacyValue.toDouble();
-                                final isCurrent =
-                                    (_state.intimacy - intimacy).abs() < 0.1;
-                                return Padding(
-                                  padding: const EdgeInsets.only(left: 4),
-                                  child: InkWell(
-                                    onTap: () =>
-                                        _state.debugSetIntimacy(intimacy),
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: isCurrent
-                                            ? const Color(0xFFFF2D55)
-                                            : (textThemeColor == Colors.white
-                                                  ? Colors.white.withOpacity(
-                                                      0.1,
-                                                    )
-                                                  : Colors.black.withOpacity(
-                                                      0.05,
-                                                    )),
+                              children: [0, 50, 100, 150, 200, 250, 300, 350]
+                                  .map((intimacyValue) {
+                                    final intimacy = intimacyValue.toDouble();
+                                    final isCurrent =
+                                        (_state.intimacy - intimacy).abs() <
+                                        0.1;
+                                    return Padding(
+                                      padding: const EdgeInsets.only(left: 4),
+                                      child: InkWell(
+                                        onTap: () =>
+                                            _state.debugSetIntimacy(intimacy),
                                         borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: isCurrent
-                                              ? Colors.transparent
-                                              : (textThemeColor == Colors.white
-                                                    ? Colors.white.withOpacity(
-                                                        0.1,
-                                                      )
-                                                    : Colors.black.withOpacity(
-                                                        0.1,
-                                                      )),
-                                          width: 1,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: isCurrent
+                                                ? const Color(0xFFFF2D55)
+                                                : (textThemeColor ==
+                                                          Colors.white
+                                                      ? Colors.white
+                                                            .withOpacity(0.1)
+                                                      : Colors.black
+                                                            .withOpacity(0.05)),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                            border: Border.all(
+                                              color: isCurrent
+                                                  ? Colors.transparent
+                                                  : (textThemeColor ==
+                                                            Colors.white
+                                                        ? Colors.white
+                                                              .withOpacity(0.1)
+                                                        : Colors.black
+                                                              .withOpacity(
+                                                                0.1,
+                                                              )),
+                                              width: 1,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            "$intimacyValue pt",
+                                            style: GoogleFonts.outfit(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: isCurrent
+                                                  ? Colors.white
+                                                  : textThemeColor,
+                                            ),
+                                          ),
                                         ),
                                       ),
-                                      child: Text(
-                                        "$intimacyValue%",
-                                        style: GoogleFonts.outfit(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: isCurrent
-                                              ? Colors.white
-                                              : textThemeColor,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }).toList(),
+                                    );
+                                  })
+                                  .toList(),
                             ),
                           ),
                         ),
@@ -3175,7 +3355,7 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
 
-          // 6. Bottom Panels (Actions + Banner Ad)
+          // 6. Bottom Panels（画面下のボタン・広告エリア）
           Positioned(
             bottom: media.padding.bottom + 12,
             left: 20,
@@ -3183,7 +3363,6 @@ class _HomeScreenState extends State<HomeScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Minimalist Action panel
                 ClipRRect(
                   borderRadius: BorderRadius.circular(24),
                   child: Container(
@@ -3262,8 +3441,6 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
                 const SizedBox(height: 12),
-
-                // AdMob test banner ad
                 _buildBannerAd(textThemeColor),
               ],
             ),
