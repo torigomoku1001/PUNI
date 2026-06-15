@@ -15,6 +15,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../physics/puni_physics.dart';
 import '../views/creature_painter.dart';
 import '../state/creature_state.dart';
+import '../models/title_badge.dart';
 import '../audio/audio_controller.dart';
 import 'dart:ui' as ui;
 import 'package:share_plus/share_plus.dart';
@@ -237,10 +238,46 @@ class _HomeScreenState extends State<HomeScreen>
       _lastKnownLevel = _state.level;
     }
 
+    if (_state.newlyUnlockedQueue.isNotEmpty) {
+      for (var badge in _state.newlyUnlockedQueue) {
+        _showBadgeUnlockedPopup(badge);
+      }
+      _state.clearNewlyUnlockedQueue();
+    }
+
     setState(() {
       _primaryColor = _state.creatureColor;
       _secondaryColor = _state.creatureColor.withOpacity(0.7);
     });
+  }
+
+  void _showBadgeUnlockedPopup(TitleBadge badge) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            _buildBadgeWidget(badge, size: 40),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('称号バッジ獲得！', style: GoogleFonts.notoSansJp(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white70)),
+                  Text(badge.name, style: GoogleFonts.notoSansJp(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.black87,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 24, left: 16, right: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   void _triggerLevelUpFeedback() {
@@ -257,15 +294,31 @@ class _HomeScreenState extends State<HomeScreen>
     final mediaSize = MediaQuery.maybeOf(context)?.size ?? const Size(400, 800);
     final boundarySize = Size(mediaSize.width, mediaSize.height);
 
-    // Random Idle hops/jumps
+    // Random Idle hops/jumps (disabled when starving)
     _timeSinceLastJump += dt;
-    if (_timeSinceLastJump > 4.5 && !_state.isDragging && !_state.isPetting) {
+    if (_state.hunger > 0.0 && _timeSinceLastJump > 4.5 && !_state.isDragging && !_state.isPetting) {
       if (Random().nextDouble() < 0.16) {
         _timeSinceLastJump = 0.0;
         double jumpImpulseX = (Random().nextDouble() - 0.5) * 320.0;
         _physics.centerVelocity = Offset(jumpImpulseX, -380.0); // Jump up!
         _state.triggerMood('happy', duration: const Duration(seconds: 2));
       }
+    }
+
+    // 満腹時限定のハッピーエフェクト（スピードアップエフェクト）
+    if (_state.hunger >= 99.0 && Random().nextDouble() < 0.04) {
+      final speed = 80.0 + Random().nextDouble() * 60.0; // 上に早く
+      _touchParticles.add(
+        TouchParticle(
+          position: _physics.center + Offset((Random().nextDouble() - 0.5) * 80.0, 20.0),
+          velocity: Offset(0, -speed), // 真上
+          maxLife: 0.6 + Random().nextDouble() * 0.4,
+          color: const Color(0xFF00FFFF), // 水色（スピードアップ感）
+          isBubble: false,
+          isSpeedUp: true,
+          sizeMultiplier: 1.2,
+        ),
+      );
     }
 
     // Inactivity/Sleep logic
@@ -282,7 +335,10 @@ class _HomeScreenState extends State<HomeScreen>
       if (_state.mood == 'sleep') {
         _timeSinceLastJump = 0.0;
       } else {
-        if (_timeSinceNoInteraction >= 30.0) {
+        // ペコペコ時は眠らず「お腹すいた」状態をキープ
+        if (_state.hunger <= 0.0) {
+          _timeSinceNoInteraction = 0.0; // 放置タイマーをリセットして寝かせない
+        } else if (_timeSinceNoInteraction >= 30.0) {
           _state.setMood('sleep');
         } else if (_timeSinceNoInteraction >= 6.0 &&
             _timeSinceNoInteraction - dt < 6.0) {
@@ -451,8 +507,8 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _maybeDropCoin(Offset position) {
-    // 10% chance to drop exactly 1 coin on PUNI interaction.
-    if (Random().nextDouble() >= 0.10) return;
+    // 30% chance to drop exactly 1 coin on PUNI interaction.
+    if (Random().nextDouble() >= 0.30) return;
 
     _state.addCoins(1);
     final angle = -pi / 2.0 + (Random().nextDouble() - 0.5) * (pi / 3.0);
@@ -481,6 +537,26 @@ class _HomeScreenState extends State<HomeScreen>
 
     _activePointers[event.pointer] = localPosition;
 
+    // ペコペコ時は1本指ドラッグのみ有効（投げなし）
+    if (_state.hunger <= 0.0) {
+      if (_activePointers.length == 1) {
+        // 潰れた時の視覚中心: x方向は1.15倍広がり、y方向は底辺(center.dy + baseRadius)を基準に0.5倍縮小し、15px上にシフト
+        final visualCenterX = _physics.center.dx;
+        final visualCenterY = _physics.center.dy + PuniPhysics.baseRadius * 0.5 - 15.0;
+        final dx = (localPosition.dx - visualCenterX) / (PuniPhysics.baseRadius * 1.15 * 1.8);
+        final dy = (localPosition.dy - visualCenterY) / (PuniPhysics.baseRadius * 0.5 * 1.8);
+        final inEllipse = (dx * dx + dy * dy) < 1.0;
+        if (inEllipse) {
+          _state.setInteraction(
+            isDragging: true,
+            isPetting: false,
+            touchPosition: localPosition,
+          );
+        }
+      }
+      return;
+    }
+
     if (_activePointers.length >= 2 && _state.intimacy >= 100.0) {
       _holdTimer?.cancel();
       _holdTimer = null;
@@ -503,7 +579,8 @@ class _HomeScreenState extends State<HomeScreen>
       );
     } else if (_activePointers.length == 1) {
       final dist = (localPosition - _physics.center).distance;
-      if (dist < PuniPhysics.baseRadius * 1.8) {
+      double touchThreshold = PuniPhysics.baseRadius * 1.8;
+      if (dist < touchThreshold) {
         // Cancel follow mode when touching inside Puni
         _followTimer?.cancel();
         _followTimer = null;
@@ -574,16 +651,23 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
-    if (_state.mood == 'sleep') {
-      _state.setMood('normal');
-    }
-    _timeSinceNoInteraction = 0.0;
     if (_isShowingInterstitialAd) return;
     final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
     if (renderBox == null) return;
     final localPosition = renderBox.globalToLocal(event.position);
-
     _activePointers[event.pointer] = localPosition;
+
+    // ペコペコ時は1本指ドラッグのみ（touchPositionを更新してすぐ返す）
+    if (_state.hunger <= 0.0) {
+      if (_activePointers.length == 1 && _state.isDragging) {
+        _state.setInteraction(
+          isDragging: true,
+          isPetting: false,
+          touchPosition: localPosition,
+        );
+      }
+      return;
+    }
 
     if (_holdStartPos != null &&
         (localPosition - _holdStartPos!).distance > 15.0) {
@@ -732,11 +816,17 @@ class _HomeScreenState extends State<HomeScreen>
     } else if (_activePointers.isEmpty) {
       bool didPlayFling = false;
       if (wasDragging) {
-        double flingSpeed = _physics.centerVelocity.distance;
-        if (flingSpeed > 320.0) {
-          _physics.centerVelocity = _physics.centerVelocity * 1.2;
-          _audioController.playFlingVoice(hasEnergy: _state.energy >= 2.0);
-          didPlayFling = true;
+        if (_state.hunger <= 0.0) {
+          _physics.centerVelocity = Offset.zero; // ペコペコ時は投げられない（落とすだけ）
+        } else {
+          double flingSpeed = _physics.centerVelocity.distance;
+          if (flingSpeed > 320.0) {
+            // 満腹度がMAX（肉5個、99.0以上）の時は投げた時の加速度（速度倍率）が上がる
+            double multiplier = (_state.hunger >= 99.0) ? 1.45 : 1.2;
+            _physics.centerVelocity = _physics.centerVelocity * multiplier;
+            
+            _audioController.playFlingVoice(hasEnergy: _state.energy >= 2.0);
+            didPlayFling = true;
 
           bool hadEnergy = _state.energy >= 2.0;
 
@@ -763,6 +853,7 @@ class _HomeScreenState extends State<HomeScreen>
             );
             _maybeDropCoin(_physics.center);
           }
+          }
         }
       }
       _state.setInteraction(
@@ -780,7 +871,7 @@ class _HomeScreenState extends State<HomeScreen>
         // ★撫でるアクション終了
         if (_pettingStartTime != null) {
           final duration = DateTime.now().difference(_pettingStartTime!);
-          if (duration.inMilliseconds >= 1800) {
+          if (duration.inMilliseconds >= 800) {
             _state.addGrowth(0.0, source: 'petting');
           }
         }
@@ -850,7 +941,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (wasPetting) {
         if (_pettingStartTime != null) {
           final duration = DateTime.now().difference(_pettingStartTime!);
-          if (duration.inMilliseconds >= 1800) {
+          if (duration.inMilliseconds >= 800) {
             _state.addGrowth(0.0, source: 'petting');
           }
         }
@@ -947,7 +1038,7 @@ class _HomeScreenState extends State<HomeScreen>
                 'color': const Color(0xFFFF2D85),
               },
               {
-                'name': '脱色薬',
+                'name': '色無くナール',
                 'type': 'medicine_bleach',
                 'cost': 50,
                 'color': const Color(0x00FFFFFF), // 透明
@@ -1355,8 +1446,11 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                       const SizedBox(height: 16),
 
-                      RepaintBoundary(
-                        key: _profileCardKey,
+                      ListenableBuilder(
+                        listenable: _state,
+                        builder: (context, _) {
+                          return RepaintBoundary(
+                            key: _profileCardKey,
                         child: AspectRatio(
                           aspectRatio: 1.7, // Widescreen ratio for sharing on X
                           child: Container(
@@ -1391,6 +1485,15 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                             child: Stack(
                               children: [
+                                if (_state.selectedTitleId != null)
+                                  Positioned(
+                                    top: 8,
+                                    right: 8,
+                                    child: _buildBadgeWidget(
+                                      TitleBadge.allBadges.firstWhere((b) => b.id == _state.selectedTitleId, orElse: () => TitleBadge.allBadges.first),
+                                      size: 56,
+                                    ),
+                                  ),
                                 // Cool slanted X background logo
                                 Positioned(
                                   right: -25,
@@ -1458,14 +1561,18 @@ class _HomeScreenState extends State<HomeScreen>
                                           const SizedBox(width: 14),
 
                                           Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              mainAxisAlignment:
-                                                  MainAxisAlignment.center,
-                                              children: [
-                                                Text(
-                                                  _state.puniName,
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(right: 64),
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.center,
+                                                children: [
+                                                  Text(
+                                                    _state.puniName,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
                                                   style: GoogleFonts.notoSansJp(
                                                     fontSize: 20,
                                                     fontWeight: FontWeight.bold,
@@ -1486,6 +1593,8 @@ class _HomeScreenState extends State<HomeScreen>
                                                 const SizedBox(height: 2),
                                                 Text(
                                                   'オーナー: ${_state.playerName}',
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
                                                   style: GoogleFonts.notoSansJp(
                                                     fontSize: 13,
                                                     fontWeight: FontWeight.bold,
@@ -1548,6 +1657,7 @@ class _HomeScreenState extends State<HomeScreen>
                                                 ),
                                               ],
                                             ),
+                                           ),
                                           ),
                                         ],
                                       ),
@@ -1559,7 +1669,6 @@ class _HomeScreenState extends State<HomeScreen>
                                       thickness: 1,
                                     ),
                                     const SizedBox(height: 8),
-
                                     Row(
                                       mainAxisAlignment:
                                           MainAxisAlignment.spaceAround,
@@ -1572,8 +1681,7 @@ class _HomeScreenState extends State<HomeScreen>
                                         _buildCardStatItem(
                                           icon: Icons.favorite,
                                           label: '親密度',
-                                          value:
-                                              '${(_state.intimacy).toStringAsFixed(2)}pt',
+                                          value: '${(_state.intimacy).toStringAsFixed(2)}pt',
                                         ),
                                         _buildCardStatItem(
                                           customIcon: const PuniCoinWidget(
@@ -1590,13 +1698,37 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ),
                         ),
-                      ),
+                      );
+                    },
+                  ),
+
 
                       const SizedBox(height: 20),
 
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            // 称号一覧を開く
+                            _showTitleListSheet();
+                          },
+                          icon: const Icon(Icons.military_tech, color: Color(0xFFFFD700)),
+                          label: Text(
+                            '称号バッジ一覧・設定',
+                            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
                       TextField(
                         controller: puniNameController,
-                        maxLength: 10,
+                        maxLength: 8,
                         decoration: InputDecoration(
                           labelText: 'PUNIの名前',
                           labelStyle: GoogleFonts.notoSansJp(),
@@ -1612,10 +1744,11 @@ class _HomeScreenState extends State<HomeScreen>
                           setState(() {});
                         },
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 16),
+
                       TextField(
                         controller: playerNameController,
-                        maxLength: 10,
+                        maxLength: 8,
                         decoration: InputDecoration(
                           labelText: 'プレイヤーの名前',
                           labelStyle: GoogleFonts.notoSansJp(),
@@ -1664,6 +1797,256 @@ class _HomeScreenState extends State<HomeScreen>
                       const SizedBox(height: 12),
                     ],
                   ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildBadgeWidget(TitleBadge badge, {double size = 40}) {
+    Color borderColor;
+    List<Color> gradientColors;
+    double glowRadius = 0;
+    
+    Color baseColor = badge.color;
+
+    switch (badge.tier) {
+      case 1: // ブロンズ
+        borderColor = const Color(0xFFCD7F32);
+        gradientColors = [baseColor.withOpacity(0.8), const Color(0xFFA0522D)];
+        break;
+      case 2: // シルバー
+        borderColor = const Color(0xFFC0C0C0);
+        gradientColors = [baseColor.withOpacity(0.9), const Color(0xFFA9A9A9)];
+        glowRadius = 2;
+        break;
+      case 3: // ゴールド
+        borderColor = const Color(0xFFFFD700);
+        gradientColors = [baseColor, const Color(0xFFDAA520)];
+        glowRadius = 4;
+        break;
+      case 4: // プラチナ・ダイヤ
+      default:
+        borderColor = const Color(0xFFE5E4E2);
+        gradientColors = [baseColor, const Color(0xFFFF69B4), const Color(0xFF8A2BE2)];
+        glowRadius = 8;
+        break;
+    }
+
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: gradientColors,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(color: borderColor, width: size * 0.05),
+        boxShadow: glowRadius > 0 ? [
+          BoxShadow(
+            color: borderColor.withOpacity(0.6),
+            blurRadius: glowRadius,
+            spreadRadius: glowRadius * 0.5,
+          )
+        ] : null,
+      ),
+      child: Center(
+        child: Icon(
+          badge.icon,
+          color: Colors.white,
+          size: size * 0.55,
+          shadows: [
+            Shadow(color: Colors.black.withOpacity(0.5), blurRadius: 3, offset: const Offset(1, 1))
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTitleListSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final theme = Theme.of(context);
+            final unlockedList = _state.unlockedTitles;
+            TitleBadge? selectedBadgeInfo;
+            if (_state.selectedTitleId != null) {
+              selectedBadgeInfo = TitleBadge.allBadges.firstWhere((b) => b.id == _state.selectedTitleId, orElse: () => TitleBadge.allBadges.first);
+            }
+            
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Container(
+                height: MediaQuery.of(context).size.height * 0.7,
+                decoration: BoxDecoration(
+                  color: theme.scaffoldBackgroundColor.withOpacity(0.95),
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+                  boxShadow: [
+                    BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 10, spreadRadius: 2),
+                  ],
+                ),
+                padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+                child: Column(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '称号バッジ一覧',
+                          style: GoogleFonts.notoSansJp(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: theme.textTheme.bodyLarge?.color,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            _state.debugUnlockAllTitles();
+                            setModalState(() {});
+                            setState(() {});
+                          },
+                          child: const Text('全部解放(テスト)'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (selectedBadgeInfo != null)
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: _primaryColor.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: _primaryColor.withOpacity(0.5)),
+                        ),
+                        child: Row(
+                          children: [
+                            _buildBadgeWidget(selectedBadgeInfo, size: 40),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    selectedBadgeInfo.name,
+                                    style: GoogleFonts.notoSansJp(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                      color: theme.textTheme.bodyLarge?.color,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    selectedBadgeInfo.description,
+                                    style: GoogleFonts.notoSansJp(
+                                      fontSize: 12,
+                                      color: theme.textTheme.bodyLarge?.color?.withOpacity(0.8),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 16),
+                    Expanded(
+                      child: GridView.builder(
+                        physics: const BouncingScrollPhysics(),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          childAspectRatio: 0.8,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                        ),
+                        itemCount: TitleBadge.allBadges.length,
+                        itemBuilder: (context, index) {
+                          final badge = TitleBadge.allBadges[index];
+                          final isUnlocked = unlockedList.contains(badge.id);
+                          final isSelected = _state.selectedTitleId == badge.id;
+                          
+                          return InkWell(
+                            onTap: isUnlocked ? () {
+                              _state.setSelectedTitle(isSelected ? null : badge.id);
+                              setModalState(() {});
+                              setState(() {}); // Updates the profile card in the background immediately
+                            } : null,
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: isUnlocked
+                                    ? (isSelected ? _primaryColor.withOpacity(0.1) : Colors.transparent)
+                                    : Colors.grey.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: isSelected 
+                                      ? _primaryColor 
+                                      : (isUnlocked ? Colors.grey.withOpacity(0.3) : Colors.transparent),
+                                  width: isSelected ? 2 : 1,
+                                ),
+                              ),
+                              padding: const EdgeInsets.all(8),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Opacity(
+                                    opacity: isUnlocked ? 1.0 : 0.3,
+                                    child: isUnlocked 
+                                      ? _buildBadgeWidget(badge, size: 48)
+                                      : Container(
+                                          width: 48,
+                                          height: 48,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: Colors.grey.shade400,
+                                          ),
+                                          child: const Icon(Icons.lock, color: Colors.white, size: 24),
+                                        ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    badge.name,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: GoogleFonts.notoSansJp(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: isUnlocked ? theme.textTheme.bodyLarge?.color : Colors.grey,
+                                      height: 1.1,
+                                    ),
+                                  ),
+                                  if (isSelected) ...[
+                                    const SizedBox(height: 4),
+                                    const Icon(Icons.check_circle, color: Color(0xFFFF2A6D), size: 16),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -2613,7 +2996,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (intimacy < 100 && intimacy >= 95) return 'もう少しで【二本指つまみ】を覚えそう…！';
     if (intimacy < 150 && intimacy >= 145) return 'もう少しで【長押し巨大化】を覚えそう…！';
     if (intimacy < 200 && intimacy >= 195) return 'もう少しで【タップ追従】を覚えそう…！';
-    if (intimacy < 250 && intimacy >= 245) return 'もう少しで【脱色薬】が入荷しそう…！';
+    if (intimacy < 250 && intimacy >= 245) return 'もう少しで【色無くナール】が入荷しそう…！';
     if (intimacy < 300 && intimacy >= 295) return 'もう少しで【薄くナール】が入荷しそう…！';
     if (intimacy < 350 && intimacy >= 345) return 'もう少しでPUNIの体が光りだすかも…！';
     return null;
@@ -2733,6 +3116,8 @@ class _HomeScreenState extends State<HomeScreen>
                           touchParticles: _touchParticles,
                           isFollowing: _isFollowingFinger,
                           followTarget: _followTarget,
+                          hunger: _state.hunger,
+                          isDragging: _state.isDragging,
                         ),
                         child: Container(),
                       ),
@@ -2891,13 +3276,18 @@ class _HomeScreenState extends State<HomeScreen>
                                                   CrossAxisAlignment.start,
                                               mainAxisSize: MainAxisSize.min,
                                               children: [
-                                                Text(
-                                                  _state.puniName,
-                                                  style: GoogleFonts.notoSansJp(
-                                                    fontSize: 15,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.white,
-                                                    height: 1.2,
+                                                Container(
+                                                  constraints: const BoxConstraints(maxWidth: 80),
+                                                  child: Text(
+                                                    _state.puniName,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: GoogleFonts.notoSansJp(
+                                                      fontSize: 15,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: Colors.white,
+                                                      height: 1.2,
+                                                    ),
                                                   ),
                                                 ),
                                                 const SizedBox(height: 2),
@@ -3162,39 +3552,106 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Row(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(
-                          Icons.favorite,
-                          color: Color(0xFFEC4899),
-                          size: 16,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          "親密度: ${(_state.intimacy).toStringAsFixed(2)} pt",
-                          style: GoogleFonts.notoSansJp(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: textThemeColor,
-                          ),
-                        ),
-                        if (_getNextIntimacyEventText() != null) ...[
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _getNextIntimacyEventText()!,
-                              style: GoogleFonts.notoSansJp(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: const Color(0xFFEC4899),
-                              ),
-                              overflow: TextOverflow.visible,
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.favorite,
+                              color: Color(0xFFEC4899),
+                              size: 16,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 4),
+                            Text(
+                              "親密度: ${(_state.intimacy).toStringAsFixed(2)} pt",
+                              style: GoogleFonts.notoSansJp(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: textThemeColor,
+                              ),
+                            ),
+                            if (_getNextIntimacyEventText() != null) ...[
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _getNextIntimacyEventText()!,
+                                  style: GoogleFonts.notoSansJp(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: const Color(0xFFEC4899),
+                                  ),
+                                  overflow: TextOverflow.visible,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.restaurant,
+                              color: Colors.orange,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              "満腹度:",
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: textThemeColor,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Row(
+                              children: List.generate(5, (index) {
+                                // 左から回復、右から減少するゲージ
+                                // index=0が左端(最初に満たされる), index=4が右端
+                                double meatThreshold = index * 20.0;
+                                double fillRatio = (_state.hunger - meatThreshold).clamp(0.0, 20.0) / 20.0;
+                                
+                                return Stack(
+                                  children: [
+                                    // 背景（空のゲージ）：グレーアウト＆少し薄く
+                                    ColorFiltered(
+                                      colorFilter: const ColorFilter.matrix(<double>[
+                                        0.2126, 0.7152, 0.0722, 0, 0,
+                                        0.2126, 0.7152, 0.0722, 0, 0,
+                                        0.2126, 0.7152, 0.0722, 0, 0,
+                                        0,      0,      0,      1, 0,
+                                      ]),
+                                      child: Opacity(
+                                        opacity: 0.3,
+                                        child: const Text(
+                                          '🍖',
+                                          style: TextStyle(fontSize: 14),
+                                        ),
+                                      ),
+                                    ),
+                                    // 手前（現在の満腹度）：fillRatioに応じて左から右へクリップされる
+                                    if (fillRatio > 0.0)
+                                      ClipRect(
+                                        child: Align(
+                                          alignment: Alignment.centerLeft,
+                                          widthFactor: fillRatio,
+                                          child: const Text(
+                                            '🍖',
+                                            style: TextStyle(fontSize: 14),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              }),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                     const SizedBox(height: 6),
+                    /*
                     const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3229,23 +3686,15 @@ class _HomeScreenState extends State<HomeScreen>
                                         color: isCurrent
                                             ? _primaryColor
                                             : (textThemeColor == Colors.white
-                                                  ? Colors.white.withOpacity(
-                                                      0.1,
-                                                    )
-                                                  : Colors.black.withOpacity(
-                                                      0.05,
-                                                    )),
+                                                  ? Colors.white.withOpacity(0.1)
+                                                  : Colors.black.withOpacity(0.05)),
                                         borderRadius: BorderRadius.circular(12),
                                         border: Border.all(
                                           color: isCurrent
                                               ? Colors.transparent
                                               : (textThemeColor == Colors.white
-                                                    ? Colors.white.withOpacity(
-                                                        0.1,
-                                                      )
-                                                    : Colors.black.withOpacity(
-                                                        0.1,
-                                                      )),
+                                                    ? Colors.white.withOpacity(0.1)
+                                                    : Colors.black.withOpacity(0.1)),
                                           width: 1,
                                         ),
                                       ),
@@ -3254,9 +3703,7 @@ class _HomeScreenState extends State<HomeScreen>
                                         style: GoogleFonts.outfit(
                                           fontSize: 10,
                                           fontWeight: FontWeight.bold,
-                                          color: isCurrent
-                                              ? Colors.white
-                                              : textThemeColor,
+                                          color: isCurrent ? Colors.white : textThemeColor,
                                         ),
                                       ),
                                     ),
@@ -3290,13 +3737,11 @@ class _HomeScreenState extends State<HomeScreen>
                                   .map((intimacyValue) {
                                     final intimacy = intimacyValue.toDouble();
                                     final isCurrent =
-                                        (_state.intimacy - intimacy).abs() <
-                                        0.1;
+                                        (_state.intimacy - intimacy).abs() < 0.1;
                                     return Padding(
                                       padding: const EdgeInsets.only(left: 4),
                                       child: InkWell(
-                                        onTap: () =>
-                                            _state.debugSetIntimacy(intimacy),
+                                        onTap: () => _state.debugSetIntimacy(intimacy),
                                         borderRadius: BorderRadius.circular(12),
                                         child: Container(
                                           padding: const EdgeInsets.symmetric(
@@ -3306,26 +3751,16 @@ class _HomeScreenState extends State<HomeScreen>
                                           decoration: BoxDecoration(
                                             color: isCurrent
                                                 ? const Color(0xFFFF2D55)
-                                                : (textThemeColor ==
-                                                          Colors.white
-                                                      ? Colors.white
-                                                            .withOpacity(0.1)
-                                                      : Colors.black
-                                                            .withOpacity(0.05)),
-                                            borderRadius: BorderRadius.circular(
-                                              12,
-                                            ),
+                                                : (textThemeColor == Colors.white
+                                                      ? Colors.white.withOpacity(0.1)
+                                                      : Colors.black.withOpacity(0.05)),
+                                            borderRadius: BorderRadius.circular(12),
                                             border: Border.all(
                                               color: isCurrent
                                                   ? Colors.transparent
-                                                  : (textThemeColor ==
-                                                            Colors.white
-                                                        ? Colors.white
-                                                              .withOpacity(0.1)
-                                                        : Colors.black
-                                                              .withOpacity(
-                                                                0.1,
-                                                              )),
+                                                  : (textThemeColor == Colors.white
+                                                        ? Colors.white.withOpacity(0.1)
+                                                        : Colors.black.withOpacity(0.1)),
                                               width: 1,
                                             ),
                                           ),
@@ -3334,9 +3769,7 @@ class _HomeScreenState extends State<HomeScreen>
                                             style: GoogleFonts.outfit(
                                               fontSize: 10,
                                               fontWeight: FontWeight.bold,
-                                              color: isCurrent
-                                                  ? Colors.white
-                                                  : textThemeColor,
+                                              color: isCurrent ? Colors.white : textThemeColor,
                                             ),
                                           ),
                                         ),
@@ -3349,6 +3782,7 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       ],
                     ),
+                    */
                   ],
                 ),
               ),
@@ -3445,6 +3879,30 @@ class _HomeScreenState extends State<HomeScreen>
               ],
             ),
           ),
+          // デバッグ用満腹度ボタン（コメントアウト）
+          /*
+          Positioned(
+            top: 40,
+            right: 16,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                ElevatedButton(
+                  onPressed: () => _state.setHunger(0.0),
+                  child: const Text('Hunger 0%', style: TextStyle(color: Colors.black)),
+                ),
+                ElevatedButton(
+                  onPressed: () => _state.setHunger(60.0),
+                  child: const Text('Hunger 60%', style: TextStyle(color: Colors.black)),
+                ),
+                ElevatedButton(
+                  onPressed: () => _state.setHunger(100.0),
+                  child: const Text('Hunger Max', style: TextStyle(color: Colors.black)),
+                ),
+              ],
+            ),
+          ),
+          */
         ],
       ),
     );
@@ -3733,6 +4191,7 @@ class TouchParticle {
   final Color color;
   final bool isBubble;
   final bool isCoin;
+  final bool isSpeedUp;
 
   TouchParticle({
     required this.position,
@@ -3741,7 +4200,11 @@ class TouchParticle {
     required this.color,
     required this.isBubble,
     this.isCoin = false,
+    this.isSpeedUp = false,
+    this.sizeMultiplier = 1.0,
   }) : life = maxLife;
+
+  final double sizeMultiplier;
 
   void update(double dt) {
     position += velocity * dt;

@@ -62,6 +62,7 @@ void main() {
 
     // Paint Puni
     final painter = CreaturePainter(
+      hunger: 100.0,
       physics: physics,
       mood: 'normal',
       shape: 'default',

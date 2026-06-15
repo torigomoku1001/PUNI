@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/title_badge.dart';
 
 class CreatureState extends ChangeNotifier {
   // Persistence Keys
@@ -37,6 +38,21 @@ class CreatureState extends ChangeNotifier {
   static const String _keyPuniCoins = 'puni_coins';
   static const String _keyPlayerName = 'puni_player_name';
   static const String _keyPuniName = 'puni_puni_name';
+  static const String _keyHunger = 'puni_hunger';
+  static const String _keyLastHungerUpdate = 'puni_last_hunger_update';
+  static const String _keyStarvationStartTime = 'puni_starvation_start_time';
+  static const String _keyLastStarvationPenaltyTime = 'puni_last_starvation_penalty_time';
+  
+  // Total stats for titles
+  static const String _keyTotalSteps = 'puni_total_steps';
+  static const String _keyTotalEnergyUsed = 'puni_total_energy_used';
+  static const String _keyTotalFeedCount = 'puni_total_feed_count';
+  static const String _keyTotalAdWatchCount = 'puni_total_ad_watch_count';
+  static const String _keyTotalCoinsEarned = 'puni_total_coins_earned';
+  
+  // Title badges
+  static const String _keyUnlockedTitles = 'puni_unlocked_titles';
+  static const String _keySelectedTitleId = 'puni_selected_title_id';
 
   // Properties
   int _level = 1;
@@ -55,6 +71,22 @@ class CreatureState extends ChangeNotifier {
   int _puniCoins = 0;
   String _playerName = 'ぷにマスター';
   String _puniName = 'ぷにちゃん';
+  double _hunger = 100.0;
+  DateTime? _lastHungerUpdate;
+  DateTime? _starvationStartTime;
+  DateTime? _lastStarvationPenaltyTime;
+
+  // Total stats for titles
+  int _totalSteps = 0;
+  double _totalEnergyUsed = 0.0;
+  int _totalFeedCount = 0;
+  int _totalAdWatchCount = 0;
+  int _totalCoinsEarned = 0;
+
+  // Title Badges
+  List<String> _unlockedTitles = [];
+  String? _selectedTitleId;
+  final List<TitleBadge> _newlyUnlockedQueue = [];
 
   // ーーー 色の成分管理システム ーーー
   final Map<String, double> _colorComponents = {
@@ -149,6 +181,7 @@ class CreatureState extends ChangeNotifier {
   int get feedCountToday => _feedCountToday;
   int get adLevelUpCountToday => _adLevelUpCountToday;
   int get feedRemainingToday => max(0, maxFeedPerDay - _feedCountToday);
+  double get hunger => _hunger;
   int get adLevelUpRemainingToday =>
       max(0, maxAdLevelUpPerDay - _adLevelUpCountToday);
   double get intimacy => _intimacy;
@@ -159,7 +192,11 @@ class CreatureState extends ChangeNotifier {
   String get puniName => _puniName;
 
   void addCoins(int amount) {
-    _puniCoins += amount;
+    _puniCoins = max(0, _puniCoins + amount);
+    if (amount > 0) {
+      _totalCoinsEarned += amount;
+      _checkTitleUnlocks();
+    }
     notifyListeners();
     _saveState();
   }
@@ -348,6 +385,29 @@ class CreatureState extends ChangeNotifier {
       _puniCoins = prefs.getInt(_keyPuniCoins) ?? 0;
       _playerName = prefs.getString(_keyPlayerName) ?? 'ぷにマスター';
       _puniName = prefs.getString(_keyPuniName) ?? 'ぷにちゃん';
+      _hunger = prefs.getDouble(_keyHunger) ?? 100.0;
+      final lastUpdateStr = prefs.getString(_keyLastHungerUpdate);
+      if (lastUpdateStr != null) {
+        _lastHungerUpdate = DateTime.tryParse(lastUpdateStr);
+      } else {
+      _lastHungerUpdate = DateTime.now();
+      }
+
+      _totalSteps = prefs.getInt(_keyTotalSteps) ?? 0;
+      _totalEnergyUsed = prefs.getDouble(_keyTotalEnergyUsed) ?? 0.0;
+      _totalFeedCount = prefs.getInt(_keyTotalFeedCount) ?? 0;
+      _totalAdWatchCount = prefs.getInt(_keyTotalAdWatchCount) ?? 0;
+      _totalCoinsEarned = prefs.getInt(_keyTotalCoinsEarned) ?? 0;
+
+      _unlockedTitles = prefs.getStringList(_keyUnlockedTitles) ?? [];
+      _selectedTitleId = prefs.getString(_keySelectedTitleId);
+
+      final startStr = prefs.getString(_keyStarvationStartTime);
+      if (startStr != null) _starvationStartTime = DateTime.tryParse(startStr);
+      
+      final penaltyStr = prefs.getString(_keyLastStarvationPenaltyTime);
+      if (penaltyStr != null) _lastStarvationPenaltyTime = DateTime.tryParse(penaltyStr);
+
       final r = prefs.getInt(_keyLockedColorR);
       final g = prefs.getInt(_keyLockedColorG);
       final b = prefs.getInt(_keyLockedColorB);
@@ -365,6 +425,7 @@ class CreatureState extends ChangeNotifier {
       _saturationModifier = prefs.getDouble('puni_saturation_mod') ?? 1.0;
       _resetStepsIfDayChanged();
       _resetActionCountsIfDayChanged();
+      _updateHunger();
       notifyListeners();
     } catch (e) {
       debugPrint("Error loading SharedPreferences: $e");
@@ -403,6 +464,37 @@ class CreatureState extends ChangeNotifier {
       await prefs.setInt(_keyPuniCoins, _puniCoins);
       await prefs.setString(_keyPlayerName, _playerName);
       await prefs.setString(_keyPuniName, _puniName);
+      await prefs.setDouble(_keyHunger, _hunger);
+      
+      await prefs.setInt(_keyTotalSteps, _totalSteps);
+      await prefs.setDouble(_keyTotalEnergyUsed, _totalEnergyUsed);
+      await prefs.setInt(_keyTotalFeedCount, _totalFeedCount);
+      await prefs.setInt(_keyTotalAdWatchCount, _totalAdWatchCount);
+      await prefs.setInt(_keyTotalCoinsEarned, _totalCoinsEarned);
+      
+      await prefs.setStringList(_keyUnlockedTitles, _unlockedTitles);
+      if (_selectedTitleId != null) {
+        await prefs.setString(_keySelectedTitleId, _selectedTitleId!);
+      } else {
+        await prefs.remove(_keySelectedTitleId);
+      }
+
+      if (_lastHungerUpdate != null) {
+        await prefs.setString(_keyLastHungerUpdate, _lastHungerUpdate!.toIso8601String());
+      }
+      
+      if (_starvationStartTime != null) {
+        await prefs.setString(_keyStarvationStartTime, _starvationStartTime!.toIso8601String());
+      } else {
+        await prefs.remove(_keyStarvationStartTime);
+      }
+      
+      if (_lastStarvationPenaltyTime != null) {
+        await prefs.setString(_keyLastStarvationPenaltyTime, _lastStarvationPenaltyTime!.toIso8601String());
+      } else {
+        await prefs.remove(_keyLastStarvationPenaltyTime);
+      }
+      
       if (_lockedColor != null) {
         await prefs.setInt(_keyLockedColorR, _lockedColor!.red);
         await prefs.setInt(_keyLockedColorG, _lockedColor!.green);
@@ -420,6 +512,50 @@ class CreatureState extends ChangeNotifier {
       await prefs.setDouble('puni_saturation_mod', _saturationModifier);
     } catch (e) {
       debugPrint("Error saving SharedPreferences: $e");
+    }
+  }
+
+  void _updateHunger() {
+    if (_lastHungerUpdate == null) {
+      _lastHungerUpdate = DateTime.now();
+      return;
+    }
+    final now = DateTime.now();
+    final difference = now.difference(_lastHungerUpdate!);
+    final hoursPassed = difference.inSeconds / 3600.0;
+    
+    if (hoursPassed >= 0.01) { // 少なくとも36秒経過で更新
+      // 1時間に10%減る (10時間で0になるペース)
+      double decrease = hoursPassed * 10.0;
+      
+      if (_hunger > 0.0 && _hunger - decrease <= 0.0) {
+        // ちょうど0になった時刻を計算して記録
+        double hoursToHitZero = _hunger / 10.0;
+        _starvationStartTime = _lastHungerUpdate!.add(Duration(seconds: (hoursToHitZero * 3600).toInt()));
+      }
+      
+      _hunger = max(0.0, _hunger - decrease);
+      
+      // 親密度ペナルティ処理（24時間経過後、1時間に0.5pt減少）
+      if (_hunger <= 0.0 && _starvationStartTime != null) {
+        final penaltyStart = _starvationStartTime!.add(const Duration(hours: 24));
+        if (now.isAfter(penaltyStart)) {
+          final lastPenalty = _lastStarvationPenaltyTime ?? penaltyStart;
+          final timeSinceLastPenalty = now.difference(lastPenalty).inSeconds / 3600.0;
+          if (timeSinceLastPenalty > 0) {
+            final penaltyPoints = timeSinceLastPenalty * 0.5;
+            _intimacy = max(0.0, _intimacy - penaltyPoints);
+            _lastStarvationPenaltyTime = now;
+          }
+        }
+      } else if (_hunger > 0.0) {
+        _starvationStartTime = null;
+        _lastStarvationPenaltyTime = null;
+      }
+
+      _lastHungerUpdate = now;
+      notifyListeners();
+      _saveState();
     }
   }
 
@@ -468,6 +604,8 @@ class CreatureState extends ChangeNotifier {
       return false;
     }
     _feedCountToday++;
+    _totalFeedCount++;
+    _checkTitleUnlocks();
     notifyListeners();
     _saveState();
     return true;
@@ -479,6 +617,8 @@ class CreatureState extends ChangeNotifier {
       return false;
     }
     _adLevelUpCountToday++;
+    _totalAdWatchCount++;
+    _checkTitleUnlocks();
     notifyListeners();
     _saveState();
     return true;
@@ -601,10 +741,21 @@ class CreatureState extends ChangeNotifier {
       // 2. エネルギーがあれば消費する
       if (energyCost > 0.0) {
         _energy = max(0.0, _energy - energyCost);
+        _totalEnergyUsed += energyCost;
       }
       
       // 3. 経験値加算はエネルギーがある場合のみ実行
       _exp += expGain;
+    }
+
+    if (source == 'feed') {
+      if (foodType != 'medicine_bleach' && foodType != 'medicine_desaturate') {
+        _hunger = min(100.0, _hunger + 10.0); // ご飯1回でお肉半分(10%)回復
+        if (_hunger > 0.0) {
+          _starvationStartTime = null;
+          _lastStarvationPenaltyTime = null;
+        }
+      }
     }
 
     // 4. 色の変化処理
@@ -628,6 +779,7 @@ class CreatureState extends ChangeNotifier {
       _levelUp();
     }
 
+    _checkTitleUnlocks();
     notifyListeners();
     _saveState();
   }
@@ -646,6 +798,18 @@ class CreatureState extends ChangeNotifier {
     _saveState();
   }
 
+  void setHunger(double value) {
+    _hunger = value.clamp(0.0, 100.0);
+    if (_hunger > 0.0) {
+      _starvationStartTime = null;
+      _lastStarvationPenaltyTime = null;
+    } else if (_starvationStartTime == null) {
+      _starvationStartTime = DateTime.now();
+    }
+    notifyListeners();
+    _saveState();
+  }
+
   void _levelUp() {
     final requiredBeforeLevelUp = requiredExp.toDouble();
     _exp = max(0.0, _exp - requiredBeforeLevelUp);
@@ -657,9 +821,7 @@ class CreatureState extends ChangeNotifier {
   }
 
   void rewardAdCoins() {
-    _puniCoins += 25;
-    notifyListeners();
-    _saveState();
+    addCoins(25);
   }
 
   void toggleColorLock() {
@@ -686,10 +848,12 @@ class CreatureState extends ChangeNotifier {
   void addSteps(int count) {
     _resetStepsIfDayChanged();
     _stepsToday += count;
+    _totalSteps += count;
     _energy = (_energy + count * 0.02).clamp(
       0.0,
       100.0,
     );
+    _checkTitleUnlocks();
     notifyListeners();
     _saveState();
   }
@@ -700,10 +864,12 @@ class CreatureState extends ChangeNotifier {
     final gainedSteps = max(0, safeTotal - _stepsToday);
     _stepsToday = safeTotal;
     if (gainedSteps > 0) {
+      _totalSteps += gainedSteps;
       _energy = (_energy + gainedSteps * 0.02).clamp(
         0.0,
         100.0,
       );
+      _checkTitleUnlocks();
     }
     notifyListeners();
     _saveState();
@@ -745,7 +911,9 @@ class CreatureState extends ChangeNotifier {
   void _startPoseTimer() {
     _poseTimer?.cancel();
     _poseTimer = Timer.periodic(const Duration(seconds: 7), (timer) {
+      _updateHunger(); // 定期的に満腹度を減少させる
       if (_isDragging) return;
+      if (_hunger <= 0.0) return; // ペコペコ時は自発的に動かない
 
       final poses = [
         'default',
@@ -788,5 +956,94 @@ class CreatureState extends ChangeNotifier {
     _poseResetTimer?.cancel();
     _moodResetTimer?.cancel(); // ➔ レインボーターマーの消去
     super.dispose();
+  }
+  String? get selectedTitleId => _selectedTitleId;
+  List<String> get unlockedTitles => _unlockedTitles;
+  List<TitleBadge> get newlyUnlockedQueue => _newlyUnlockedQueue;
+
+  void clearNewlyUnlockedQueue() {
+    _newlyUnlockedQueue.clear();
+  }
+
+  void setSelectedTitle(String? titleId) {
+    _selectedTitleId = titleId;
+    notifyListeners();
+    _saveState();
+  }
+
+  void _checkTitleUnlocks() {
+    // === 親密度 ===
+    _unlockIf(100, _intimacy, 'intimacy_100');
+    _unlockIf(200, _intimacy, 'intimacy_200');
+    _unlockIf(300, _intimacy, 'intimacy_300');
+    _unlockIf(400, _intimacy, 'intimacy_400');
+    _unlockIf(500, _intimacy, 'intimacy_500');
+    _unlockIf(1000, _intimacy, 'intimacy_1000');
+    _unlockIf(3000, _intimacy, 'intimacy_3000');
+    _unlockIf(5000, _intimacy, 'intimacy_5000');
+
+    // === 歩数 ===
+    _unlockIf(1000, _totalSteps.toDouble(), 'steps_1000');
+    _unlockIf(10000, _totalSteps.toDouble(), 'steps_10000');
+    _unlockIf(100000, _totalSteps.toDouble(), 'steps_100000');
+    _unlockIf(500000, _totalSteps.toDouble(), 'steps_500000');
+    _unlockIf(1000000, _totalSteps.toDouble(), 'steps_1000000');
+
+    // === レベル ===
+    _unlockIf(10, _level.toDouble(), 'level_10');
+    _unlockIf(30, _level.toDouble(), 'level_30');
+    _unlockIf(50, _level.toDouble(), 'level_50');
+    _unlockIf(77, _level.toDouble(), 'level_77');
+    _unlockIf(100, _level.toDouble(), 'level_100');
+
+    // === 消費エネルギー ===
+    _unlockIf(100, _totalEnergyUsed, 'energy_100');
+    _unlockIf(1000, _totalEnergyUsed, 'energy_1000');
+    _unlockIf(5000, _totalEnergyUsed, 'energy_5000');
+    _unlockIf(7777, _totalEnergyUsed, 'energy_7777');
+    _unlockIf(10000, _totalEnergyUsed, 'energy_10000');
+
+    // === ご飯回数 ===
+    _unlockIf(10, _totalFeedCount.toDouble(), 'feed_10');
+    _unlockIf(50, _totalFeedCount.toDouble(), 'feed_50');
+    _unlockIf(77, _totalFeedCount.toDouble(), 'feed_77');
+    _unlockIf(100, _totalFeedCount.toDouble(), 'feed_100');
+    _unlockIf(500, _totalFeedCount.toDouble(), 'feed_500');
+    _unlockIf(1000, _totalFeedCount.toDouble(), 'feed_1000');
+
+    // === 動画視聴 ===
+    _unlockIf(5, _totalAdWatchCount.toDouble(), 'ad_5');
+    _unlockIf(10, _totalAdWatchCount.toDouble(), 'ad_10');
+    _unlockIf(30, _totalAdWatchCount.toDouble(), 'ad_30');
+    _unlockIf(50, _totalAdWatchCount.toDouble(), 'ad_50');
+    _unlockIf(100, _totalAdWatchCount.toDouble(), 'ad_100');
+    _unlockIf(500, _totalAdWatchCount.toDouble(), 'ad_500');
+    _unlockIf(1000, _totalAdWatchCount.toDouble(), 'ad_1000');
+
+    // === 累計コイン ===
+    _unlockIf(77777, _totalCoinsEarned.toDouble(), 'coin_77777');
+  }
+
+  void _unlockIf(double required, double current, String id) {
+    if (current >= required && !_unlockedTitles.contains(id)) {
+      _unlockedTitles.add(id);
+      try {
+        final badge = TitleBadge.allBadges.firstWhere((b) => b.id == id);
+        _newlyUnlockedQueue.add(badge);
+      } catch (e) {
+        debugPrint("Error finding badge $id");
+      }
+    }
+  }
+
+  // デバッグ用: 称号をすべて解放する
+  void debugUnlockAllTitles() {
+    for (var badge in TitleBadge.allBadges) {
+      if (!_unlockedTitles.contains(badge.id)) {
+        _unlockedTitles.add(badge.id);
+      }
+    }
+    notifyListeners();
+    _saveState();
   }
 }

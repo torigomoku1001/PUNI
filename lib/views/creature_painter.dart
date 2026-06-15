@@ -24,6 +24,8 @@ class CreaturePainter extends CustomPainter {
   final bool isFollowing;
   final Offset? followTarget;
   final double renderScale;
+  final double hunger;
+  final bool isDragging;
 
   CreaturePainter({
     required this.physics,
@@ -45,6 +47,8 @@ class CreaturePainter extends CustomPainter {
     this.isFollowing = false,
     this.followTarget,
     this.renderScale = 1.0,
+    required this.hunger,
+    this.isDragging = false,
   });
 
   @override
@@ -56,6 +60,15 @@ class CreaturePainter extends CustomPainter {
 
     // 0. DRAW GROUND DROP SHADOW ON THE FLOOR
     final floorY = size.height - 210.0;
+    
+    if (hunger <= 0.0) {
+      canvas.save();
+      double visualBottom = center.dy + PuniPhysics.baseRadius;
+      canvas.translate(center.dx, visualBottom - 15.0); // メニューバーに被らないよう15px上に持ち上げる
+      canvas.scale(1.15, 0.5); // 少しだけ横に広げて潰す
+      canvas.translate(-center.dx, -visualBottom);
+    }
+
     final distToFloor = floorY - center.dy;
     final distancePct = ((distToFloor - PuniPhysics.baseRadius) / 350.0).clamp(
       0.0,
@@ -163,6 +176,11 @@ class CreaturePainter extends CustomPainter {
     // 5. DRAW ELECTRIC SPARKS
     _drawElectricSparks(canvas, center);
 
+    // 潰れたスケールをリセット（吹き出しやZzzなどが潰れないようにする）
+    if (hunger <= 0.0) {
+      canvas.restore();
+    }
+
     // 6. DRAW TOUCH PARTICLES
     _drawTouchParticles(canvas);
 
@@ -201,6 +219,84 @@ class CreaturePainter extends CustomPainter {
         );
       }
     }
+
+    // 7b. DRAW HUNGRY EFFECT - 3-circle speech bubble with onigiri loop
+    // 空中・ドラッグ中は非表示
+    final bool isAirborne = distToFloor > PuniPhysics.baseRadius * 1.5;
+    if (hunger <= 0.0 && !isDragging && !isAirborne) {
+      final double time = DateTime.now().millisecondsSinceEpoch / 1000.0;
+      // 全体4.0秒周期: 小丸→中丸→大丸+おにぎり→消える→繰り返し
+      final double cycle = (time % 4.0);
+      // 各フェーズ境界 (秒)
+      // 0.0〜0.5: 小丸フェードイン
+      // 0.5〜1.0: 中丸フェードイン
+      // 1.0〜1.5: 大丸フェードイン + おにぎりフェードイン
+      // 1.5〜2.8: 全部表示
+      // 2.8〜3.3: フェードアウト
+      // 3.3〜4.0: 休止
+
+      double _fade(double start, double duration) {
+        if (cycle < start) return 0.0;
+        if (cycle < start + duration) return (cycle - start) / duration;
+        return 1.0;
+      }
+      double _fadeOut(double start, double duration) {
+        if (cycle < start) return 1.0;
+        if (cycle < start + duration) return 1.0 - (cycle - start) / duration;
+        return 0.0;
+      }
+
+      // フェードアウト開始: 2.8秒, 持続: 0.5秒
+      final double fadeOutFactor = cycle >= 2.8 ? _fadeOut(2.8, 0.5) : 1.0;
+
+      // 各丸のオパシティ
+      final double dot1Op = _fade(0.0, 0.35) * fadeOutFactor;
+      final double dot2Op = _fade(0.5, 0.35) * fadeOutFactor;
+      final double dot3Op = _fade(1.0, 0.35) * fadeOutFactor;
+      final double onigiOp = _fade(1.2, 0.35) * fadeOutFactor;
+
+      // 基準位置: ぷにの右上
+      final Offset base = center + const Offset(20, -42);
+
+      // 円の描画ヘルパー
+      void drawCircle(Offset pos, double r, double opacity) {
+        if (opacity <= 0.01) return;
+        final fill = Paint()
+          ..color = Colors.white.withOpacity(opacity * 0.93)
+          ..style = PaintingStyle.fill;
+        final border = Paint()
+          ..color = const Color(0xFFCCCCCC).withOpacity(opacity * 0.65)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2;
+        canvas.drawCircle(pos, r, fill);
+        canvas.drawCircle(pos, r, border);
+      }
+
+      // 小丸 (左下)
+      drawCircle(base + const Offset(-14, 12), 5.0, dot1Op);
+      // 中丸 (少し上)
+      drawCircle(base + const Offset(-4, 4), 8.0, dot2Op);
+      // 大丸 (メイン吹き出し)
+      drawCircle(base + const Offset(10, -8), 18.0, dot3Op);
+
+      // おにぎり絵文字 (大丸の中)
+      if (onigiOp > 0.01) {
+        final textPainter = TextPainter(textDirection: TextDirection.ltr);
+        textPainter.text = const TextSpan(
+          text: '\u{1F359}',
+          style: TextStyle(fontSize: 18),
+        );
+        textPainter.layout();
+        final onigiCenter = base + const Offset(10, -8);
+        textPainter.paint(
+          canvas,
+          onigiCenter + Offset(-textPainter.width / 2, -textPainter.height / 2),
+        );
+      }
+    }
+
+
+
 
     // 8. DRAW VORTEX ATTRACTION RIPPLES
     if (isFollowing && followTarget != null) {
@@ -359,6 +455,12 @@ class CreaturePainter extends CustomPainter {
     if (mood == 'levelup') {
       _drawLevelUpBullseyeEye(canvas, leftEyeCenter, eyePaint);
       _drawLevelUpBullseyeEye(canvas, rightEyeCenter, eyePaint);
+      return;
+    }
+
+    if (hunger <= 0.0) {
+      _drawRectEye(canvas, leftEyeCenter, 14.0, 2.5, 0.5, pi / 8.0, eyePaint);
+      _drawRectEye(canvas, rightEyeCenter, 14.0, 2.5, 0.5, -pi / 8.0, eyePaint);
       return;
     }
 
@@ -602,22 +704,53 @@ class CreaturePainter extends CustomPainter {
 
       if (particle.isCoin) {
         _drawCoin(canvas, particle.position, 28.0 * (0.5 + 0.5 * alpha), alpha);
+      } else if (particle.isSpeedUp) {
+        _drawSpeedUp(
+          canvas,
+          particle.position,
+          24.0 * particle.sizeMultiplier * (0.5 + 0.5 * alpha),
+          paint,
+        );
       } else if (particle.isBubble) {
         _drawBubble(
           canvas,
           particle.position,
-          14.0 * (0.5 + 0.5 * alpha),
+          14.0 * particle.sizeMultiplier * (0.5 + 0.5 * alpha),
           paint,
         );
       } else {
         _drawSparkle(
           canvas,
           particle.position,
-          12.0 * (0.5 + 0.5 * alpha),
+          12.0 * particle.sizeMultiplier * (0.5 + 0.5 * alpha),
           paint,
         );
       }
     }
+  }
+
+  void _drawSpeedUp(Canvas canvas, Offset center, double size, Paint paint) {
+    // Two upward chevrons (>> pointing up)
+    final path = Path();
+    
+    // Bottom chevron
+    path.moveTo(center.dx - size * 0.4, center.dy + size * 0.4);
+    path.lineTo(center.dx, center.dy - size * 0.1);
+    path.lineTo(center.dx + size * 0.4, center.dy + size * 0.4);
+    
+    // Top chevron
+    path.moveTo(center.dx - size * 0.4, center.dy);
+    path.lineTo(center.dx, center.dy - size * 0.5);
+    path.lineTo(center.dx + size * 0.4, center.dy);
+
+    final linePaint = Paint()
+      ..color = paint.color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.6
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+      
+    canvas.drawPath(path, linePaint);
   }
 
   void _drawCoin(Canvas canvas, Offset center, double size, double alpha) {
