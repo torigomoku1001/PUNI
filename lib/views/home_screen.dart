@@ -18,9 +18,12 @@ import '../state/creature_state.dart';
 import '../models/title_badge.dart';
 import '../audio/audio_controller.dart';
 import 'dart:ui' as ui;
-import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/rendering.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
+import '../views/ranking_sheet.dart';
+import 'package:share_plus/share_plus.dart';
+import '../services/transfer_service.dart';
 
 class FoodBubble {
   Offset position;
@@ -76,6 +79,14 @@ class _HomeScreenState extends State<HomeScreen>
   late final AudioController _audioController;
   final GlobalKey _profileCardKey = GlobalKey();
 
+  // Tutorial Keys
+  final GlobalKey _puniKey = GlobalKey();
+  final GlobalKey _foodMenuKey = GlobalKey();
+  final GlobalKey _profileBtnKey = GlobalKey();
+  final GlobalKey _energyKey = GlobalKey();
+  final GlobalKey _helpBtnKey = GlobalKey();
+  bool _isTutorialShown = false;
+
   // Game Loop
   late final AnimationController _gameLoopController;
   double _lastElapsedTime = 0.0;
@@ -97,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen>
   double _timeSinceLastJump = 0.0;
   double _timeSinceNoInteraction = 0.0;
   double _chargingRecoveryAccumulator = 0.0;
+  bool _isPausedState = false;
   int _lastKnownLevel = 1;
   bool _hasInitializedLevelTracking = false;
   double _levelUpSparkleTimer = 0.0;
@@ -111,6 +123,7 @@ class _HomeScreenState extends State<HomeScreen>
   final List<TouchParticle> _touchParticles = [];
   DateTime? _lastEatAt;
   DateTime? _pettingStartTime;
+  DateTime? _lastFlingRewardTime;
 
   // Puni Colors (Peach / Rose base)
   Color _primaryColor = const Color(0xFFD2D2D8);
@@ -145,6 +158,9 @@ class _HomeScreenState extends State<HomeScreen>
   Offset? _followStartPos;
   Offset? _followTarget;
   bool _isFollowingFinger = false;
+
+  double _accumulatedPettingSeconds = 0.0;
+  double _accumulatedFollowSeconds = 0.0;
 
   String get _bannerAdUnitId {
     switch (defaultTargetPlatform) {
@@ -210,9 +226,13 @@ class _HomeScreenState extends State<HomeScreen>
     });
     // Check initial charging state
     _battery.batteryState.then((state) {
-      setState(() {
-        _isCharging = (state == BatteryState.charging);
-      });
+      final isChargingNow = (state == BatteryState.charging);
+      if (mounted) {
+        setState(() {
+          _isCharging = isChargingNow;
+        });
+      }
+      _state.processAppResumed(isChargingNow);
     });
 
     _loadBannerAd();
@@ -251,6 +271,219 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
+  void _checkAndShowTutorial() {
+    if (!_state.hasCompletedTutorial && !_isTutorialShown) {
+      _isTutorialShown = true;
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) _showTutorial();
+      });
+    }
+  }
+
+  Widget _buildTutorialContent({
+    required String title,
+    required String description,
+    required dynamic controller,
+    bool isLast = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 10,
+          )
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: GoogleFonts.notoSansJp(
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+              fontSize: 20.0,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            description,
+            style: GoogleFonts.notoSansJp(
+              color: Colors.white,
+              fontSize: 14.0,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFF2A6D),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              onPressed: () {
+                if (isLast) {
+                  controller.skip();
+                } else {
+                  controller.next();
+                }
+              },
+              child: Text(
+                isLast ? "はじめる！" : "次へ",
+                style: GoogleFonts.notoSansJp(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTutorial() {
+    List<TargetFocus> targets = [];
+
+    targets.add(
+      TargetFocus(
+        identify: "PUNI_Target",
+        keyTarget: _puniKey,
+        alignSkip: Alignment.topRight,
+        contents: [
+          TargetContent(
+            customPosition: CustomTargetContentPosition(
+              top: MediaQuery.of(context).size.height * 0.15,
+            ),
+            builder: (context, controller) {
+              return _buildTutorialContent(
+                title: "ようこそ！あなたのPUNIです！",
+                description: "タップしてなでたり、スワイプして投げたりして遊んでみてね！遊ぶと親密度が上がります。\nさらに、お世話をしてレベルアップしていくとPUNIはどんどん柔らかくなっていきます！\nどれくらい柔らかくなるのか、一緒に成長してあなたの目で確かめてみてね！",
+                controller: controller,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    targets.add(
+      TargetFocus(
+        identify: "Food_Target",
+        keyTarget: _foodMenuKey,
+        alignSkip: Alignment.topRight,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            builder: (context, controller) {
+              return _buildTutorialContent(
+                title: "ご飯をあげよう",
+                description: "ここから色々なご飯をあげられます。\nあげたご飯の色に合わせてPUNIの色が徐々に変化していくよ！",
+                controller: controller,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    targets.add(
+      TargetFocus(
+        identify: "Profile_Target",
+        keyTarget: _profileBtnKey,
+        alignSkip: Alignment.topRight,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            builder: (context, controller) {
+              return _buildTutorialContent(
+                title: "ステータスと実績",
+                description: "PUNIの詳しい状態や実績、オンラインランキングはここから確認できます。",
+                controller: controller,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    targets.add(
+      TargetFocus(
+        identify: "Energy_Target",
+        keyTarget: _energyKey,
+        alignSkip: Alignment.topRight,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            builder: (context, controller) {
+              return _buildTutorialContent(
+                title: "エネルギーについて",
+                description: "お世話するにはエネルギーが必要です。\nスマホを持って歩いたり、充電したりすると貯まります！",
+                controller: controller,
+                isLast: false,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    targets.add(
+      TargetFocus(
+        identify: "Help_Target",
+        keyTarget: _helpBtnKey,
+        alignSkip: Alignment.topRight,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top, // 下部ボタンなので上に表示
+            builder: (context, controller) {
+              return _buildTutorialContent(
+                title: "困ったときは",
+                description: "わからないことがあれば、この説明ヘルプで確認してね！\nそれでは、PUNIとの生活を楽しんでください！さあ、育ててみましょう！",
+                controller: controller,
+                isLast: true,
+              );
+            },
+          ),
+        ],
+      ),
+    );
+
+    late TutorialCoachMark tutorialCoachMark;
+    tutorialCoachMark = TutorialCoachMark(
+      targets: targets,
+      colorShadow: Colors.black,
+      textSkip: "スキップ",
+      paddingFocus: 10,
+      opacityShadow: 0.90, // しっかり暗くする
+      onFinish: () {
+        _state.completeTutorial();
+      },
+      onClickTarget: (target) {
+        // 明示的なボタン進行のみにするため、ここでの進行は無効化
+      },
+      onClickOverlay: (target) {
+        // 同上
+      },
+      onSkip: () {
+        _state.completeTutorial();
+        return true;
+      },
+    );
+    tutorialCoachMark.show(context: context);
+  }
+
   void _showBadgeUnlockedPopup(TitleBadge badge) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -286,6 +519,13 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _tickPhysics() {
+    if (!_state.hasCompletedTutorial) {
+      final mediaSize = MediaQuery.maybeOf(context)?.size ?? const Size(400, 800);
+      _physics.center = Offset(mediaSize.width / 2, mediaSize.height / 2);
+      _physics.centerVelocity = Offset.zero;
+      return;
+    }
+
     final double totalElapsed = _gameLoopController.value;
     double dt = totalElapsed - _lastElapsedTime;
     if (dt < 0) dt += 1.0;
@@ -414,6 +654,28 @@ class _HomeScreenState extends State<HomeScreen>
       _chargingRecoveryAccumulator = 0.0;
     }
 
+    if (_isFollowingFinger) {
+      _accumulatedFollowSeconds += dt;
+      if (_accumulatedFollowSeconds >= 1.0) {
+        _state.addFollowSeconds(_accumulatedFollowSeconds);
+        _accumulatedFollowSeconds = 0.0;
+      }
+    } else if (_accumulatedFollowSeconds > 0) {
+      _state.addFollowSeconds(_accumulatedFollowSeconds);
+      _accumulatedFollowSeconds = 0.0;
+    }
+
+    if (_state.isPetting && _interactionMode == 'pet') {
+      _accumulatedPettingSeconds += dt;
+      if (_accumulatedPettingSeconds >= 1.0) {
+        _state.addPettingSeconds(_accumulatedPettingSeconds);
+        _accumulatedPettingSeconds = 0.0;
+      }
+    } else if (_accumulatedPettingSeconds > 0) {
+      _state.addPettingSeconds(_accumulatedPettingSeconds);
+      _accumulatedPettingSeconds = 0.0;
+    }
+
     // Update food particles
     final bottomLimit =
         boundarySize.height - 210.0; // Keep food above action panel & banner ad
@@ -510,7 +772,7 @@ class _HomeScreenState extends State<HomeScreen>
     // 30% chance to drop exactly 1 coin on PUNI interaction.
     if (Random().nextDouble() >= 0.30) return;
 
-    _state.addCoins(1);
+    _state.addDroppedCoin(1);
     final angle = -pi / 2.0 + (Random().nextDouble() - 0.5) * (pi / 3.0);
     final speed = 150.0 + Random().nextDouble() * 200.0;
     _touchParticles.add(
@@ -806,6 +1068,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       // ★つまみアクション終了
       _state.addGrowth(0.0, source: 'pinch');
+      _state.addPinchCount();
 
       if (_state.energy < 1.0) {
         _state.triggerMood('sad', duration: const Duration(seconds: 3));
@@ -828,31 +1091,46 @@ class _HomeScreenState extends State<HomeScreen>
             _audioController.playFlingVoice(hasEnergy: _state.energy >= 2.0);
             didPlayFling = true;
 
-          bool hadEnergy = _state.energy >= 2.0;
+            bool canReward = true;
+            if (_lastFlingRewardTime != null) {
+              final diff = DateTime.now().difference(_lastFlingRewardTime!);
+              if (diff.inSeconds < 2) {
+                canReward = false;
+              }
+            }
 
-          double targetIntimacy = (flingSpeed < 1700.0)
-              ? 0.5
-              : (flingSpeed >= 2300.0 ? 1.0 : 0.75);
-          double targetExp = (flingSpeed < 1700.0)
-              ? 50.0
-              : (flingSpeed >= 2300.0 ? 150.0 : 100.0);
+            if (canReward) {
+              _lastFlingRewardTime = DateTime.now();
+              bool hadEnergy = _state.energy >= 2.0;
 
-          _state.addGrowth(
-            0.0,
-            source: 'fling',
-            customIntimacy: targetIntimacy,
-            customExp: targetExp,
-          );
+              double targetIntimacy = (flingSpeed < 1700.0)
+                  ? 0.5
+                  : (flingSpeed >= 2300.0 ? 1.0 : 0.75);
+              double targetExp = (flingSpeed < 1700.0)
+                  ? 50.0
+                  : (flingSpeed >= 2300.0 ? 150.0 : 100.0);
 
-          if (!hadEnergy) {
-            _state.triggerMood('sad', duration: const Duration(seconds: 3));
-          } else {
-            _state.triggerMood(
-              'surprised',
-              duration: const Duration(seconds: 3),
-            );
-            _maybeDropCoin(_physics.center);
-          }
+              _state.addGrowth(
+                0.0,
+                source: 'fling',
+                customIntimacy: targetIntimacy,
+                customExp: targetExp,
+              );
+              _state.addThrowCount();
+
+              if (!hadEnergy) {
+                _state.triggerMood('sad', duration: const Duration(seconds: 3));
+              } else {
+                _state.triggerMood(
+                  'surprised',
+                  duration: const Duration(seconds: 3),
+                );
+                _maybeDropCoin(_physics.center);
+              }
+            } else {
+              // クールダウン中は投げるカウントだけ加算し、報酬やエネルギー消費は行わない
+              _state.addThrowCount();
+            }
           }
         }
       }
@@ -880,6 +1158,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (wasInflating) {
         // ★巨大化アクション終了
         _state.addGrowth(0.0, source: 'balloon');
+        _state.addBalloonCount();
         if (_state.energy < 1.0) {
           _state.triggerMood('sad', duration: const Duration(seconds: 3));
         } else {
@@ -927,6 +1206,7 @@ class _HomeScreenState extends State<HomeScreen>
 
       // つまみアクション中断時も加算処理を通す
       _state.addGrowth(0.0, source: 'pinch');
+      _state.addPinchCount();
 
       _audioController.playPetEndVoice(hasEnergy: hasEnergyAtRelease);
     } else if (_activePointers.isEmpty) {
@@ -948,6 +1228,7 @@ class _HomeScreenState extends State<HomeScreen>
         _pettingStartTime = null;
       } else if (wasInflating) {
         _state.addGrowth(0.0, source: 'balloon');
+        _state.addBalloonCount();
       }
 
       if (wasPetting || wasInflating || wasDragging) {
@@ -1356,6 +1637,147 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  String _formatSeconds(double totalSeconds) {
+    int seconds = totalSeconds.toInt();
+    if (seconds < 60) {
+      return '$seconds秒';
+    }
+    int minutes = seconds ~/ 60;
+    int remainingSeconds = seconds % 60;
+    if (minutes < 60) {
+      return '$minutes分 ${remainingSeconds}秒';
+    }
+    int hours = minutes ~/ 60;
+    int remainingMinutes = minutes % 60;
+    return '$hours時間 $remainingMinutes分 ${remainingSeconds}秒';
+  }
+
+  void _showRankingSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            top: MediaQuery.of(context).padding.top + 40,
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: RankingSheet(
+            state: _state,
+            primaryColor: _primaryColor,
+          ),
+        );
+      },
+    );
+  }
+
+  void _showAchievementsSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              color: theme.scaffoldBackgroundColor.withOpacity(0.95),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '実績',
+                  style: GoogleFonts.notoSansJp(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: theme.textTheme.bodyLarge?.color,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      _buildAchievementRow(Icons.restaurant, 'ご飯をあげた回数', '${_state.totalFeedCount}回'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.swipe_up, 'PUNIを投げた回数', '${_state.totalThrowCount}回'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.directions_walk, 'PUNIと歩いた歩数', '${_state.totalSteps}歩'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.monetization_on, 'ドロップコイン', '${_state.totalDroppedCoins}枚'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.pinch, '2本指つまみの回数', '${_state.totalPinchCount}回'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.zoom_out_map, '長押し巨大化の回数', '${_state.totalBalloonCount}回'),
+                      const Divider(),
+                      _buildAchievementRow(Icons.touch_app, 'タップ追従させた時間', _formatSeconds(_state.totalFollowSeconds)),
+                      const Divider(),
+                      _buildAchievementRow(Icons.favorite, 'なでた時間', _formatSeconds(_state.totalPettingSeconds)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(
+                    'とじる',
+                    style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAchievementRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 28, color: _primaryColor),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(
+              label,
+              style: GoogleFonts.notoSansJp(fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+          ),
+          Text(
+            value,
+            style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _colorToHex(Color color) {
     return '#${color.value.toRadixString(16).substring(2).toUpperCase()}';
   }
@@ -1726,6 +2148,51 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                       ),
                       const SizedBox(height: 16),
+                      
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            // 実績一覧を開く
+                            _showAchievementsSheet();
+                          },
+                          icon: const Icon(Icons.bar_chart, color: Colors.blueAccent),
+                          label: Text(
+                            '実績を見る',
+                            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            // ランキング一覧を開く
+                            _showRankingSheet();
+                          },
+                          icon: const Icon(Icons.emoji_events, color: Colors.orangeAccent),
+                          label: Text(
+                            'ランキングを見る',
+                            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      
                       TextField(
                         controller: puniNameController,
                         maxLength: 8,
@@ -1794,11 +2261,278 @@ class _HomeScreenState extends State<HomeScreen>
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
+
                     ],
                   ),
                 ),
               ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showTransferMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.95),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'データ引き継ぎ',
+                style: GoogleFonts.notoSansJp(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '引き継ぎコードを発行してデータをバックアップするか、\n発行済みのコードを使ってデータを復元します。',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.notoSansJp(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _showIssueTransferCodeDialog();
+                      },
+                      icon: const Icon(Icons.cloud_upload, color: Colors.blue),
+                      label: Text(
+                        'コード発行\n(バックアップ)',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        _showTransferDataDialog();
+                      },
+                      icon: const Icon(Icons.cloud_download, color: Colors.green),
+                      label: Text(
+                        'データを\n引き継ぐ',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text('キャンセル', style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold)),
+                ),
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showIssueTransferCodeDialog() {
+    bool isIssuing = true;
+    TransferCode? code;
+    String? errorMessage;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            if (isIssuing && code == null && errorMessage == null) {
+              TransferService().issueTransferCode().then((result) {
+                setState(() {
+                  code = result;
+                  isIssuing = false;
+                });
+              }).catchError((e) {
+                setState(() {
+                  errorMessage = e.toString();
+                  isIssuing = false;
+                });
+              });
+            }
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text('引き継ぎコード発行', style: GoogleFonts.notoSansJp(color: Colors.white, fontWeight: FontWeight.bold)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (isIssuing) ...[
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text('発行中...', style: GoogleFonts.notoSansJp(color: Colors.white70)),
+                  ] else if (errorMessage != null) ...[
+                    const Icon(Icons.error, color: Colors.red, size: 48),
+                    const SizedBox(height: 16),
+                    Text('エラーが発生しました', style: GoogleFonts.notoSansJp(color: Colors.red)),
+                  ] else if (code != null) ...[
+                    Text('以下の情報を大切に保管してください。', style: GoogleFonts.notoSansJp(color: Colors.white)),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                      child: Column(
+                        children: [
+                          Text('引き継ぎID', style: GoogleFonts.notoSansJp(color: Colors.white70, fontSize: 12)),
+                          SelectableText(code!.id, style: GoogleFonts.outfit(color: Colors.blueAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 8),
+                          Text('パスワード', style: GoogleFonts.notoSansJp(color: Colors.white70, fontSize: 12)),
+                          SelectableText(code!.password, style: GoogleFonts.outfit(color: Colors.redAccent, fontSize: 24, fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text('※新しい端末でこのIDとパスワードを入力すると、現在の状態を復元できます。', style: GoogleFonts.notoSansJp(color: Colors.orange, fontSize: 12)),
+                  ],
+                ],
+              ),
+              actions: [
+                if (!isIssuing)
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text('閉じる', style: GoogleFonts.notoSansJp(color: Colors.white)),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showTransferDataDialog() {
+    final idController = TextEditingController();
+    final passwordController = TextEditingController();
+    bool isTransferring = false;
+    String? errorMessage;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Text('データ引き継ぎ', style: GoogleFonts.notoSansJp(color: Colors.white, fontWeight: FontWeight.bold)),
+              content: isTransferring
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 16),
+                        Text('復元中...', style: GoogleFonts.notoSansJp(color: Colors.white70)),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('発行されたIDとパスワードを入力してください。', style: GoogleFonts.notoSansJp(color: Colors.white70)),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: idController,
+                          decoration: InputDecoration(
+                            labelText: '引き継ぎID',
+                            filled: true,
+                            fillColor: Colors.white10,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          style: GoogleFonts.outfit(color: Colors.white),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: passwordController,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'パスワード',
+                            filled: true,
+                            fillColor: Colors.white10,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          style: GoogleFonts.outfit(color: Colors.white),
+                        ),
+                        if (errorMessage != null) ...[
+                          const SizedBox(height: 16),
+                          Text(errorMessage!, style: GoogleFonts.notoSansJp(color: Colors.red)),
+                        ]
+                      ],
+                    ),
+              actions: isTransferring
+                  ? []
+                  : [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text('キャンセル', style: GoogleFonts.notoSansJp(color: Colors.white70)),
+                      ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                        onPressed: () async {
+                          if (idController.text.isEmpty || passwordController.text.isEmpty) return;
+                          
+                          setState(() {
+                            isTransferring = true;
+                            errorMessage = null;
+                          });
+
+                          try {
+                            await TransferService().transferData(idController.text.trim(), passwordController.text.trim());
+                            await _state.reloadState();
+                            if (mounted) {
+                              Navigator.of(context).pop();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('データの引き継ぎに成功しました！', style: GoogleFonts.notoSansJp())),
+                              );
+                            }
+                          } catch (e) {
+                            setState(() {
+                              isTransferring = false;
+                              errorMessage = e.toString().replaceAll('Exception: ', '');
+                            });
+                          }
+                        },
+                        child: Text('引き継ぐ', style: GoogleFonts.notoSansJp(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
             );
           },
         );
@@ -1918,14 +2652,6 @@ class _HomeScreenState extends State<HomeScreen>
                             fontWeight: FontWeight.bold,
                             color: theme.textTheme.bodyLarge?.color,
                           ),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            _state.debugUnlockAllTitles();
-                            setModalState(() {});
-                            setState(() {});
-                          },
-                          child: const Text('全部解放(テスト)'),
                         ),
                       ],
                     ),
@@ -2282,7 +3008,7 @@ class _HomeScreenState extends State<HomeScreen>
                         children: [
                           // Section 1: Recovery
                           buildSectionTitle(
-                            'エネルギーの回復',
+                            'エネルギーの回復と注意点',
                             Icons.bolt,
                             const Color(0xFFFFCC00),
                           ),
@@ -2300,7 +3026,7 @@ class _HomeScreenState extends State<HomeScreen>
                                     const SizedBox(width: 6),
                                     Expanded(
                                       child: Text(
-                                        '散歩: 今日の歩数同期 (1歩 ＝ +0.02)',
+                                        '散歩: 今日の歩数同期 (目安: 50歩 ＝ +1.0)',
                                         style: GoogleFonts.notoSansJp(
                                           fontSize: 12,
                                           color: textThemeColor,
@@ -2313,14 +3039,14 @@ class _HomeScreenState extends State<HomeScreen>
                                 Row(
                                   children: [
                                     const Icon(
-                                      Icons.power,
+                                      Icons.bedtime,
                                       size: 16,
-                                      color: Colors.blue,
+                                      color: Colors.deepPurple,
                                     ),
                                     const SizedBox(width: 6),
                                     Expanded(
                                       child: Text(
-                                        '充電: 放置または起動中 (1分 ＝ +0.5)',
+                                        '睡眠: 毎日のヘルスケア睡眠データ (1時間 ＝ +10.0)',
                                         style: GoogleFonts.notoSansJp(
                                           fontSize: 12,
                                           color: textThemeColor,
@@ -2329,9 +3055,18 @@ class _HomeScreenState extends State<HomeScreen>
                                     ),
                                   ],
                                 ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  '【！エネルギー不足に注意！】\nエネルギーが足りない状態でお世話をしても、経験値が一切入らなくなり、親密度の上がり幅も大幅に減少してしまいます。（※ご飯はエネルギー不要です）',
+                                  style: GoogleFonts.notoSansJp(
+                                    fontSize: 11,
+                                    color: Colors.red[400],
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  '※ ぷにエネルギーの上限は 100 です。エネルギーを消費してお世話するとPUNIが成長しレベルアップします。',
+                                  '※ ぷにエネルギーの上限は 100 です。',
                                   style: GoogleFonts.notoSansJp(
                                     fontSize: 11,
                                     color: Colors.grey[600],
@@ -2352,7 +3087,7 @@ class _HomeScreenState extends State<HomeScreen>
                               children: [
                                 _buildPlayRow(
                                   'なでる',
-                                  'PUNIをなぞると気持ちよさそうにします。',
+                                  'PUNIをなぞると気持ちよさそうにします。じっくり（0.8秒以上）優しくなでてあげると、しっかり喜んで親密度が上がります。',
                                   '初期解放',
                                   true,
                                   textThemeColor,
@@ -2360,7 +3095,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 const Divider(height: 12),
                                 _buildPlayRow(
                                   '投げる',
-                                  'スワイプして投げると弾んで喜びます。',
+                                  'スワイプして投げると弾んで喜びます。一度大きく遊んだあとは、PUNIにも少し休憩（2秒間）が必要です。連続でポイポイ投げすぎると疲れてしまい、親密度が上がりません。',
                                   '初期解放',
                                   true,
                                   textThemeColor,
@@ -2393,6 +3128,28 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ),
 
+                          // Section 2.5: Hunger
+                          buildSectionTitle(
+                            'PUNIの体調（満腹度）',
+                            Icons.restaurant,
+                            const Color(0xFFFF9F0A),
+                          ),
+                          buildCard(
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '【満腹度MAX！】\n満腹度がいっぱい（99%以上）になると、青い上矢印のエフェクトが出ます。この状態のPUNIはパワーがみなぎっており、スワイプして投げた時のジャンプ力がアップします。速く飛ぶほど経験値や親密度が多くもらえる大チャンスです！\n\n【ペコペコ状態】\nお腹が空きすぎ（満腹度0%）ると、上に投げることができなくなり、すぐに落ちてしまいます。また放置しても「睡眠」しなくなります。',
+                                  style: GoogleFonts.notoSansJp(
+                                    fontSize: 12,
+                                    color: textThemeColor,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
                           // Section 3: Colors
                           buildSectionTitle(
                             '色の育て方とごはん',
@@ -2408,6 +3165,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   style: GoogleFonts.notoSansJp(
                                     fontSize: 12,
                                     color: textThemeColor,
+                                    height: 1.4,
                                   ),
                                 ),
                                 const SizedBox(height: 12),
@@ -2940,6 +3698,8 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       );
     }
+
+    _checkAndShowTutorial(); // 許可ダイアログ等の処理が完了した後にチュートリアルを開始
   }
 
   LinearGradient _getBackgroundGradient() {
@@ -3028,7 +3788,25 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      if (!_isPausedState) {
+        _isPausedState = true;
+        _state.markAppPaused(_isCharging);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_isPausedState) {
+        _isPausedState = false;
+        _battery.batteryState.then((batteryState) {
+          final isChargingNow = (batteryState == BatteryState.charging);
+          if (mounted) {
+            setState(() {
+              _isCharging = isChargingNow;
+            });
+          }
+          _state.processAppResumed(isChargingNow);
+        });
+      }
+
       _state.refreshDailyActionLimits();
       _refreshHealthPermissionDeniedFlag();
 
@@ -3124,6 +3902,17 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
+                  // ダミーのPUNIターゲット（PUNIの現在位置に追従して適切なスポットライトサイズにする）
+                  Positioned(
+                    left: _physics.center.dx - 75,
+                    top: _physics.center.dy - 75,
+                    child: SizedBox(
+                      key: _puniKey,
+                      width: 150,
+                      height: 150,
+                    ),
+                  ),
+
                   // レベルアップのエフェクト
                   Positioned.fill(
                     child: IgnorePointer(
@@ -3190,6 +3979,7 @@ class _HomeScreenState extends State<HomeScreen>
             left: 20,
             right: 20,
             child: ClipRRect(
+              key: _energyKey,
               borderRadius: BorderRadius.circular(24),
               child: Container(
                 decoration: BoxDecoration(
@@ -3218,6 +4008,7 @@ class _HomeScreenState extends State<HomeScreen>
                             Row(
                               children: [
                                 GestureDetector(
+                                  key: _profileBtnKey,
                                   onTap: _openProfileCardSheet,
                                   child: Container(
                                     clipBehavior: Clip.antiAlias,
@@ -3589,200 +4380,90 @@ class _HomeScreenState extends State<HomeScreen>
                         ),
                         const SizedBox(height: 8),
                         Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Icon(
-                              Icons.restaurant,
-                              color: Colors.orange,
-                              size: 16,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              "満腹度:",
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: textThemeColor,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
                             Row(
-                              children: List.generate(5, (index) {
-                                // 左から回復、右から減少するゲージ
-                                // index=0が左端(最初に満たされる), index=4が右端
-                                double meatThreshold = index * 20.0;
-                                double fillRatio = (_state.hunger - meatThreshold).clamp(0.0, 20.0) / 20.0;
-                                
-                                return Stack(
-                                  children: [
-                                    // 背景（空のゲージ）：グレーアウト＆少し薄く
-                                    ColorFiltered(
-                                      colorFilter: const ColorFilter.matrix(<double>[
-                                        0.2126, 0.7152, 0.0722, 0, 0,
-                                        0.2126, 0.7152, 0.0722, 0, 0,
-                                        0.2126, 0.7152, 0.0722, 0, 0,
-                                        0,      0,      0,      1, 0,
-                                      ]),
-                                      child: Opacity(
-                                        opacity: 0.3,
-                                        child: const Text(
-                                          '🍖',
-                                          style: TextStyle(fontSize: 14),
-                                        ),
-                                      ),
-                                    ),
-                                    // 手前（現在の満腹度）：fillRatioに応じて左から右へクリップされる
-                                    if (fillRatio > 0.0)
-                                      ClipRect(
-                                        child: Align(
-                                          alignment: Alignment.centerLeft,
-                                          widthFactor: fillRatio,
-                                          child: const Text(
-                                            '🍖',
-                                            style: TextStyle(fontSize: 14),
+                              children: [
+                                const Icon(
+                                  Icons.restaurant,
+                                  color: Colors.orange,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  "満腹度:",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: textThemeColor,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Row(
+                                  children: List.generate(5, (index) {
+                                    // 左から回復、右から減少するゲージ
+                                    // index=0が左端(最初に満たされる), index=4が右端
+                                    double meatThreshold = index * 20.0;
+                                    double fillRatio = (_state.hunger - meatThreshold).clamp(0.0, 20.0) / 20.0;
+                                    
+                                    return Stack(
+                                      children: [
+                                        // 背景（空のゲージ）：グレーアウト＆少し薄く
+                                        ColorFiltered(
+                                          colorFilter: const ColorFilter.matrix(<double>[
+                                            0.2126, 0.7152, 0.0722, 0, 0,
+                                            0.2126, 0.7152, 0.0722, 0, 0,
+                                            0.2126, 0.7152, 0.0722, 0, 0,
+                                            0,      0,      0,      1, 0,
+                                          ]),
+                                          child: Opacity(
+                                            opacity: 0.3,
+                                            child: const Text(
+                                              '🍖',
+                                              style: TextStyle(fontSize: 14),
+                                            ),
                                           ),
                                         ),
-                                      ),
+                                        // 手前（現在の満腹度）：fillRatioに応じて左から右へクリップされる
+                                        if (fillRatio > 0.0)
+                                          ClipRect(
+                                            child: Align(
+                                              alignment: Alignment.centerLeft,
+                                              widthFactor: fillRatio,
+                                              child: const Text(
+                                                '🍖',
+                                                style: TextStyle(fontSize: 14),
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    );
+                                  }),
+                                ),
+                              ],
+                            ),
+                            InkWell(
+                              onTap: _showTransferMenu,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: textThemeColor.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.cloud_sync, size: 14, color: textThemeColor.withOpacity(0.9)),
+                                    const SizedBox(width: 4),
+                                    Text("データ引継", style: GoogleFonts.notoSansJp(fontSize: 10, fontWeight: FontWeight.bold, color: textThemeColor.withOpacity(0.9))),
                                   ],
-                                );
-                              }),
+                                ),
+                              ),
                             ),
                           ],
                         ),
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    /*
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          "テスト用Lv変更:",
-                          style: GoogleFonts.notoSansJp(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: textThemeColor.withOpacity(0.7),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            physics: const BouncingScrollPhysics(),
-                            child: Row(
-                              children: [1, 25, 50, 75, 100].map((lv) {
-                                final isCurrent = _state.level == lv;
-                                return Padding(
-                                  padding: const EdgeInsets.only(left: 4),
-                                  child: InkWell(
-                                    onTap: () => _state.debugSetLevel(lv),
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: isCurrent
-                                            ? _primaryColor
-                                            : (textThemeColor == Colors.white
-                                                  ? Colors.white.withOpacity(0.1)
-                                                  : Colors.black.withOpacity(0.05)),
-                                        borderRadius: BorderRadius.circular(12),
-                                        border: Border.all(
-                                          color: isCurrent
-                                              ? Colors.transparent
-                                              : (textThemeColor == Colors.white
-                                                    ? Colors.white.withOpacity(0.1)
-                                                    : Colors.black.withOpacity(0.1)),
-                                          width: 1,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        "Lv$lv",
-                                        style: GoogleFonts.outfit(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: isCurrent ? Colors.white : textThemeColor,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }).toList(),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          "テスト用親密度変更:",
-                          style: GoogleFonts.notoSansJp(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: textThemeColor.withOpacity(0.7),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            physics: const BouncingScrollPhysics(),
-                            child: Row(
-                              children: [0, 50, 100, 150, 200, 250, 300, 350]
-                                  .map((intimacyValue) {
-                                    final intimacy = intimacyValue.toDouble();
-                                    final isCurrent =
-                                        (_state.intimacy - intimacy).abs() < 0.1;
-                                    return Padding(
-                                      padding: const EdgeInsets.only(left: 4),
-                                      child: InkWell(
-                                        onTap: () => _state.debugSetIntimacy(intimacy),
-                                        borderRadius: BorderRadius.circular(12),
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 4,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: isCurrent
-                                                ? const Color(0xFFFF2D55)
-                                                : (textThemeColor == Colors.white
-                                                      ? Colors.white.withOpacity(0.1)
-                                                      : Colors.black.withOpacity(0.05)),
-                                            borderRadius: BorderRadius.circular(12),
-                                            border: Border.all(
-                                              color: isCurrent
-                                                  ? Colors.transparent
-                                                  : (textThemeColor == Colors.white
-                                                        ? Colors.white.withOpacity(0.1)
-                                                        : Colors.black.withOpacity(0.1)),
-                                              width: 1,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            "$intimacyValue pt",
-                                            style: GoogleFonts.outfit(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: isCurrent ? Colors.white : textThemeColor,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  })
-                                  .toList(),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    */
                   ],
                 ),
               ),
@@ -3834,6 +4515,7 @@ class _HomeScreenState extends State<HomeScreen>
                           },
                         ),
                         _buildActionButton(
+                          key: _foodMenuKey,
                           icon: Icons.cookie,
                           label: "ご飯",
                           subtitle:
@@ -3863,6 +4545,7 @@ class _HomeScreenState extends State<HomeScreen>
                           onPressed: _watchAdToLevelUp,
                         ),
                         _buildActionButton(
+                          key: _helpBtnKey,
                           icon: Icons.info_outline,
                           label: "説明",
                           subtitle: 'ヘルプ',
@@ -3909,6 +4592,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildActionButton({
+    Key? key,
     required IconData icon,
     required String label,
     required String subtitle,
@@ -3919,6 +4603,7 @@ class _HomeScreenState extends State<HomeScreen>
   }) {
     final activeColor = const Color(0xFFFF2A6D);
     return InkWell(
+      key: key,
       onTap: isEnabled ? onPressed : null,
       borderRadius: BorderRadius.circular(16),
       child: Padding(

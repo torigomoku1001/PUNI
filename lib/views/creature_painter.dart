@@ -156,7 +156,7 @@ class CreaturePainter extends CustomPainter {
 
     if (!isCharging) {
       final borderPaint = Paint()
-        ..color = const Color(0xFF3C3C40).withOpacity(currentOpacity)
+        ..color = const Color(0xFF3C3C40)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0
         ..strokeJoin = StrokeJoin.round;
@@ -437,7 +437,7 @@ class CreaturePainter extends CustomPainter {
 
     final currentOpacity = primaryColor.opacity;
     final eyePaint = Paint()
-      ..color = const Color(0xFF1E1E24).withOpacity(currentOpacity)
+      ..color = const Color(0xFF1E1E24)
       ..style = PaintingStyle.fill;
 
     if (isBlinking) {

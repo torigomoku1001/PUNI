@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/title_badge.dart';
+import '../services/ranking_service.dart';
 
 class CreatureState extends ChangeNotifier {
   // Persistence Keys
@@ -42,17 +43,29 @@ class CreatureState extends ChangeNotifier {
   static const String _keyLastHungerUpdate = 'puni_last_hunger_update';
   static const String _keyStarvationStartTime = 'puni_starvation_start_time';
   static const String _keyLastStarvationPenaltyTime = 'puni_last_starvation_penalty_time';
+  static const String _keyLastPauseTime = 'puni_last_pause_time';
+  static const String _keyWasChargingOnPause = 'puni_was_charging_on_pause';
   
-  // Total stats for titles
+  // Total stats for titles & achievements
   static const String _keyTotalSteps = 'puni_total_steps';
   static const String _keyTotalEnergyUsed = 'puni_total_energy_used';
   static const String _keyTotalFeedCount = 'puni_total_feed_count';
   static const String _keyTotalAdWatchCount = 'puni_total_ad_watch_count';
   static const String _keyTotalCoinsEarned = 'puni_total_coins_earned';
   
+  static const String _keyTotalThrowCount = 'puni_total_throw_count';
+  static const String _keyTotalDroppedCoins = 'puni_total_dropped_coins';
+  static const String _keyTotalPinchCount = 'puni_total_pinch_count';
+  static const String _keyTotalBalloonCount = 'puni_total_balloon_count';
+  static const String _keyTotalFollowSeconds = 'puni_total_follow_seconds';
+  static const String _keyTotalPettingSeconds = 'puni_total_petting_seconds';
+  
   // Title badges
   static const String _keyUnlockedTitles = 'puni_unlocked_titles';
   static const String _keySelectedTitleId = 'puni_selected_title_id';
+
+  // Tutorial
+  static const String _keyHasCompletedTutorial = 'puni_has_completed_tutorial';
 
   // Properties
   int _level = 1;
@@ -75,6 +88,8 @@ class CreatureState extends ChangeNotifier {
   DateTime? _lastHungerUpdate;
   DateTime? _starvationStartTime;
   DateTime? _lastStarvationPenaltyTime;
+  
+  bool _hasCompletedTutorial = false;
 
   // Total stats for titles
   int _totalSteps = 0;
@@ -82,6 +97,13 @@ class CreatureState extends ChangeNotifier {
   int _totalFeedCount = 0;
   int _totalAdWatchCount = 0;
   int _totalCoinsEarned = 0;
+  
+  int _totalThrowCount = 0;
+  int _totalDroppedCoins = 0;
+  int _totalPinchCount = 0;
+  int _totalBalloonCount = 0;
+  double _totalFollowSeconds = 0.0;
+  double _totalPettingSeconds = 0.0;
 
   // Title Badges
   List<String> _unlockedTitles = [];
@@ -190,6 +212,17 @@ class CreatureState extends ChangeNotifier {
   int get puniCoins => _puniCoins;
   String get playerName => _playerName;
   String get puniName => _puniName;
+  bool get hasCompletedTutorial => _hasCompletedTutorial;
+
+  // Additional getters for stats
+  int get totalSteps => _totalSteps;
+  int get totalFeedCount => _totalFeedCount;
+  int get totalThrowCount => _totalThrowCount;
+  int get totalDroppedCoins => _totalDroppedCoins;
+  int get totalPinchCount => _totalPinchCount;
+  int get totalBalloonCount => _totalBalloonCount;
+  double get totalFollowSeconds => _totalFollowSeconds;
+  double get totalPettingSeconds => _totalPettingSeconds;
 
   void addCoins(int amount) {
     _puniCoins = max(0, _puniCoins + amount);
@@ -199,6 +232,42 @@ class CreatureState extends ChangeNotifier {
     }
     notifyListeners();
     _saveState();
+  }
+
+  void checkNewTitles() {
+    _checkTitleUnlocks();
+  }
+
+  void addThrowCount() {
+    _totalThrowCount++;
+    _saveState();
+  }
+
+  void addPinchCount() {
+    _totalPinchCount++;
+    _saveState();
+  }
+
+  void addBalloonCount() {
+    _totalBalloonCount++;
+    _saveState();
+  }
+
+  void addFollowSeconds(double seconds) {
+    if (seconds <= 0) return;
+    _totalFollowSeconds += seconds;
+    notifyListeners();
+  }
+
+  void addPettingSeconds(double seconds) {
+    if (seconds <= 0) return;
+    _totalPettingSeconds += seconds;
+    notifyListeners();
+  }
+
+  void addDroppedCoin(int amount) {
+    _totalDroppedCoins += amount;
+    addCoins(amount);
   }
 
   bool spendCoins(int amount) {
@@ -352,6 +421,10 @@ class CreatureState extends ChangeNotifier {
     _startPoseTimer();
   }
 
+  Future<void> reloadState() async {
+    await _loadState();
+  }
+
   Future<void> _loadState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -398,8 +471,16 @@ class CreatureState extends ChangeNotifier {
       _totalFeedCount = prefs.getInt(_keyTotalFeedCount) ?? 0;
       _totalAdWatchCount = prefs.getInt(_keyTotalAdWatchCount) ?? 0;
       _totalCoinsEarned = prefs.getInt(_keyTotalCoinsEarned) ?? 0;
+      
+      _totalThrowCount = prefs.getInt(_keyTotalThrowCount) ?? 0;
+      _totalDroppedCoins = prefs.getInt(_keyTotalDroppedCoins) ?? 0;
+      _totalPinchCount = prefs.getInt(_keyTotalPinchCount) ?? 0;
+      _totalBalloonCount = prefs.getInt(_keyTotalBalloonCount) ?? 0;
+      _totalFollowSeconds = prefs.getDouble(_keyTotalFollowSeconds) ?? 0.0;
+      _totalPettingSeconds = prefs.getDouble(_keyTotalPettingSeconds) ?? 0.0;
 
-      _unlockedTitles = prefs.getStringList(_keyUnlockedTitles) ?? [];
+      final titlesList = prefs.getStringList(_keyUnlockedTitles) ?? [];
+      _unlockedTitles = titlesList;
       _selectedTitleId = prefs.getString(_keySelectedTitleId);
 
       final startStr = prefs.getString(_keyStarvationStartTime);
@@ -426,10 +507,18 @@ class CreatureState extends ChangeNotifier {
       _resetStepsIfDayChanged();
       _resetActionCountsIfDayChanged();
       _updateHunger();
-      notifyListeners();
+      notifyListeners();      
+      _hasCompletedTutorial = prefs.getBool(_keyHasCompletedTutorial) ?? false;
+      
     } catch (e) {
       debugPrint("Error loading SharedPreferences: $e");
     }
+  }
+
+  void completeTutorial() {
+    _hasCompletedTutorial = true;
+    _saveState();
+    notifyListeners();
   }
 
   Future<void> _saveState() async {
@@ -465,12 +554,20 @@ class CreatureState extends ChangeNotifier {
       await prefs.setString(_keyPlayerName, _playerName);
       await prefs.setString(_keyPuniName, _puniName);
       await prefs.setDouble(_keyHunger, _hunger);
+      await prefs.setBool(_keyHasCompletedTutorial, _hasCompletedTutorial);
       
       await prefs.setInt(_keyTotalSteps, _totalSteps);
       await prefs.setDouble(_keyTotalEnergyUsed, _totalEnergyUsed);
       await prefs.setInt(_keyTotalFeedCount, _totalFeedCount);
       await prefs.setInt(_keyTotalAdWatchCount, _totalAdWatchCount);
       await prefs.setInt(_keyTotalCoinsEarned, _totalCoinsEarned);
+      
+      await prefs.setInt(_keyTotalThrowCount, _totalThrowCount);
+      await prefs.setInt(_keyTotalDroppedCoins, _totalDroppedCoins);
+      await prefs.setInt(_keyTotalPinchCount, _totalPinchCount);
+      await prefs.setInt(_keyTotalBalloonCount, _totalBalloonCount);
+      await prefs.setDouble(_keyTotalFollowSeconds, _totalFollowSeconds);
+      await prefs.setDouble(_keyTotalPettingSeconds, _totalPettingSeconds);
       
       await prefs.setStringList(_keyUnlockedTitles, _unlockedTitles);
       if (_selectedTitleId != null) {
@@ -513,6 +610,35 @@ class CreatureState extends ChangeNotifier {
     } catch (e) {
       debugPrint("Error saving SharedPreferences: $e");
     }
+  }
+
+  // オンラインランキングへ現在のスコアを同期
+  Future<void> syncRankings() async {
+    final rankingService = RankingService();
+    
+    // 親密度の同期
+    await rankingService.syncScore(
+      category: 'intimacy',
+      score: _intimacy,
+      playerName: _playerName,
+      puniName: _puniName,
+    );
+    
+    // レベルの同期
+    await rankingService.syncScore(
+      category: 'level',
+      score: _level.toDouble(),
+      playerName: _playerName,
+      puniName: _puniName,
+    );
+    
+    // ドロップコイン数の同期
+    await rankingService.syncScore(
+      category: 'coins',
+      score: _totalDroppedCoins.toDouble(),
+      playerName: _playerName,
+      puniName: _puniName,
+    );
   }
 
   void _updateHunger() {
@@ -906,6 +1032,32 @@ class CreatureState extends ChangeNotifier {
     _energy = next;
     notifyListeners();
     _saveState();
+  }
+
+  Future<void> markAppPaused(bool isCharging) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_keyLastPauseTime, DateTime.now().millisecondsSinceEpoch);
+    await prefs.setBool(_keyWasChargingOnPause, isCharging);
+  }
+
+  Future<void> processAppResumed(bool isChargingNow) async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastPauseTimeMs = prefs.getInt(_keyLastPauseTime);
+    final wasChargingOnPause = prefs.getBool(_keyWasChargingOnPause) ?? false;
+    
+    if (lastPauseTimeMs != null) {
+      final lastPauseTime = DateTime.fromMillisecondsSinceEpoch(lastPauseTimeMs);
+      final elapsedSeconds = DateTime.now().difference(lastPauseTime).inSeconds.toDouble();
+      
+      if (elapsedSeconds > 0 && (wasChargingOnPause || isChargingNow)) {
+        // 最大24時間分まで加算（不正利用防止）
+        final clampedSeconds = elapsedSeconds.clamp(0.0, 86400.0);
+        addChargingEnergySeconds(clampedSeconds);
+      }
+      
+      await prefs.remove(_keyLastPauseTime);
+      await prefs.remove(_keyWasChargingOnPause);
+    }
   }
 
   void _startPoseTimer() {
