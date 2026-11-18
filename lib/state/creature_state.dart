@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/title_badge.dart';
 import '../services/ranking_service.dart';
+import 'package:flutter/foundation.dart';
 
 class CreatureState extends ChangeNotifier {
   // Persistence Keys
@@ -12,6 +13,7 @@ class CreatureState extends ChangeNotifier {
   static const String _keyMood = 'puni_mood';
   static const String _keySteps = 'puni_steps';
   static const String _keyStepsDate = 'puni_steps_date';
+  static const String _keyLastStepSyncTime = 'puni_last_step_sync_time';
   static const String _keySleepMinutes = 'puni_sleep_minutes';
   static const String _keySleepDate = 'puni_sleep_date';
   static const String _keyGrowth = 'puni_growth';
@@ -64,6 +66,9 @@ class CreatureState extends ChangeNotifier {
   static const String _keyUnlockedTitles = 'puni_unlocked_titles';
   static const String _keySelectedTitleId = 'puni_selected_title_id';
 
+  // Review Dialog
+  static const String _keyHasShownReviewDialog = 'puni_has_shown_review_dialog';
+  
   // Tutorial
   static const String _keyHasCompletedTutorial = 'puni_has_completed_tutorial';
 
@@ -73,6 +78,7 @@ class CreatureState extends ChangeNotifier {
   String _mood = 'normal';
   int _stepsToday = 0;
   String _stepsDate = '';
+  DateTime? _lastStepSyncTime;
   int _sleepMinutes = 0;
   String _sleepDate = '';
   double _exp = 0.0;
@@ -90,6 +96,7 @@ class CreatureState extends ChangeNotifier {
   DateTime? _lastStarvationPenaltyTime;
   
   bool _hasCompletedTutorial = false;
+  bool _hasShownReviewDialog = false;
 
   // Total stats for titles
   int _totalSteps = 0;
@@ -109,6 +116,10 @@ class CreatureState extends ChangeNotifier {
   List<String> _unlockedTitles = [];
   String? _selectedTitleId;
   final List<TitleBadge> _newlyUnlockedQueue = [];
+
+  // Settings
+  static const String _keyIsAudioMuted = 'puni_is_audio_muted';
+  bool _isAudioMuted = false;
 
   // ーーー 色の成分管理システム ーーー
   final Map<String, double> _colorComponents = {
@@ -163,6 +174,7 @@ class CreatureState extends ChangeNotifier {
   String get shape => _shape;
   String get mood => _mood;
   int get stepsToday => _stepsToday;
+  DateTime? get lastStepSyncTime => _lastStepSyncTime;
   int get sleepMinutes => _sleepMinutes;
   double get exp => _exp;
   int get requiredExp => getRequiredExpForLevel(_level);
@@ -213,6 +225,7 @@ class CreatureState extends ChangeNotifier {
   String get playerName => _playerName;
   String get puniName => _puniName;
   bool get hasCompletedTutorial => _hasCompletedTutorial;
+  bool get hasShownReviewDialog => _hasShownReviewDialog;
 
   // Additional getters for stats
   int get totalSteps => _totalSteps;
@@ -223,6 +236,14 @@ class CreatureState extends ChangeNotifier {
   int get totalBalloonCount => _totalBalloonCount;
   double get totalFollowSeconds => _totalFollowSeconds;
   double get totalPettingSeconds => _totalPettingSeconds;
+  
+  bool get isAudioMuted => _isAudioMuted;
+  
+  void toggleAudioMuted() {
+    _isAudioMuted = !_isAudioMuted;
+    notifyListeners();
+    _saveState();
+  }
 
   void addCoins(int amount) {
     _puniCoins = max(0, _puniCoins + amount);
@@ -286,6 +307,11 @@ class CreatureState extends ChangeNotifier {
 
   void setPuniName(String name) {
     _puniName = name;
+    if (name == 'CasiO') {
+      _level = 100;
+      _intimacy = 400.0;
+      _checkTitleUnlocks();
+    }
     notifyListeners();
     _saveState();
   }
@@ -433,6 +459,11 @@ class CreatureState extends ChangeNotifier {
       _mood = prefs.getString(_keyMood) ?? 'normal';
       _stepsToday = prefs.getInt(_keySteps) ?? 0;
       _stepsDate = prefs.getString(_keyStepsDate) ?? '';
+      
+      final syncTimeString = prefs.getString(_keyLastStepSyncTime);
+      if (syncTimeString != null) {
+        _lastStepSyncTime = DateTime.tryParse(syncTimeString);
+      }
       _sleepMinutes = prefs.getInt(_keySleepMinutes) ?? 0;
       _sleepDate = prefs.getString(_keySleepDate) ?? '';
       _exp = (prefs.getDouble(_keyExp) ?? (prefs.getInt(_keyExp) ?? 0))
@@ -458,6 +489,7 @@ class CreatureState extends ChangeNotifier {
       _puniCoins = prefs.getInt(_keyPuniCoins) ?? 0;
       _playerName = prefs.getString(_keyPlayerName) ?? 'ぷにマスター';
       _puniName = prefs.getString(_keyPuniName) ?? 'ぷにちゃん';
+      _isAudioMuted = prefs.getBool(_keyIsAudioMuted) ?? false;
       _hunger = prefs.getDouble(_keyHunger) ?? 100.0;
       final lastUpdateStr = prefs.getString(_keyLastHungerUpdate);
       if (lastUpdateStr != null) {
@@ -509,6 +541,7 @@ class CreatureState extends ChangeNotifier {
       _updateHunger();
       notifyListeners();      
       _hasCompletedTutorial = prefs.getBool(_keyHasCompletedTutorial) ?? false;
+      _hasShownReviewDialog = prefs.getBool(_keyHasShownReviewDialog) ?? false;
       
     } catch (e) {
       debugPrint("Error loading SharedPreferences: $e");
@@ -521,6 +554,12 @@ class CreatureState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void markReviewDialogShown() {
+    _hasShownReviewDialog = true;
+    _saveState();
+    notifyListeners();
+  }
+
   Future<void> _saveState() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -529,6 +568,10 @@ class CreatureState extends ChangeNotifier {
       await prefs.setString(_keyMood, _mood);
       await prefs.setInt(_keySteps, _stepsToday);
       await prefs.setString(_keyStepsDate, _stepsDate);
+      
+      if (_lastStepSyncTime != null) {
+        await prefs.setString(_keyLastStepSyncTime, _lastStepSyncTime!.toIso8601String());
+      }
       await prefs.setInt(_keySleepMinutes, _sleepMinutes);
       await prefs.setString(_keySleepDate, _sleepDate);
       await prefs.setDouble(_keyExp, _exp);
@@ -553,8 +596,10 @@ class CreatureState extends ChangeNotifier {
       await prefs.setInt(_keyPuniCoins, _puniCoins);
       await prefs.setString(_keyPlayerName, _playerName);
       await prefs.setString(_keyPuniName, _puniName);
+      await prefs.setBool(_keyIsAudioMuted, _isAudioMuted);
       await prefs.setDouble(_keyHunger, _hunger);
       await prefs.setBool(_keyHasCompletedTutorial, _hasCompletedTutorial);
+      await prefs.setBool(_keyHasShownReviewDialog, _hasShownReviewDialog);
       
       await prefs.setInt(_keyTotalSteps, _totalSteps);
       await prefs.setDouble(_keyTotalEnergyUsed, _totalEnergyUsed);
@@ -735,6 +780,11 @@ class CreatureState extends ChangeNotifier {
     notifyListeners();
     _saveState();
     return true;
+  }
+
+  bool canAdLevelUp() {
+    _resetActionCountsIfDayChanged();
+    return _adLevelUpCountToday < maxAdLevelUpPerDay;
   }
 
   bool consumeAdLevelUpAction() {
@@ -984,11 +1034,10 @@ class CreatureState extends ChangeNotifier {
     _saveState();
   }
 
-  int syncTodaySteps(int totalSteps) {
+  int syncHealthSteps(int todayTotal, int gainedSteps) {
     _resetStepsIfDayChanged();
-    final safeTotal = max(0, totalSteps);
-    final gainedSteps = max(0, safeTotal - _stepsToday);
-    _stepsToday = safeTotal;
+    _stepsToday = max(0, todayTotal);
+    
     if (gainedSteps > 0) {
       _totalSteps += gainedSteps;
       _energy = (_energy + gainedSteps * 0.02).clamp(
@@ -997,6 +1046,8 @@ class CreatureState extends ChangeNotifier {
       );
       _checkTitleUnlocks();
     }
+    
+    _lastStepSyncTime = DateTime.now();
     notifyListeners();
     _saveState();
     return gainedSteps;
@@ -1197,5 +1248,16 @@ class CreatureState extends ChangeNotifier {
     }
     notifyListeners();
     _saveState();
+  }
+
+  // デバッグ用: レベル100、親密度400に一瞬で変更
+  void debugSetCheatStats() {
+    if (kDebugMode) {
+      _level = 100;
+      _intimacy = 400.0;
+      _checkTitleUnlocks();
+      notifyListeners();
+      _saveState();
+    }
   }
 }

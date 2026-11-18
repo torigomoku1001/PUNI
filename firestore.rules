@@ -1,0 +1,22 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ランキング用コレクション
+    match /rankings_intimacy/{playerId} {
+      allow read, write: if true;
+    }
+    match /rankings_level/{playerId} {
+      allow read, write: if true;
+    }
+    match /rankings_coins/{playerId} {
+      allow read, write: if true;
+    }
+
+    // データ引き継ぎ用コレクション
+    match /transfer_data/{transferId} {
+      allow read, write: if true;
+    }
+  }
+}
+

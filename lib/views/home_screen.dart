@@ -24,6 +24,7 @@ import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import '../views/ranking_sheet.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/transfer_service.dart';
+import 'package:in_app_review/in_app_review.dart';
 
 class FoodBubble {
   Offset position;
@@ -73,7 +74,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final PuniPhysics _physics;
   late final CreatureState _state;
   late final AudioController _audioController;
@@ -89,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   // Game Loop
   late final AnimationController _gameLoopController;
+  late final AnimationController _energyBlinkController;
   double _lastElapsedTime = 0.0;
 
   // Interactive gravity & Pedometer
@@ -165,7 +167,7 @@ class _HomeScreenState extends State<HomeScreen>
   String get _bannerAdUnitId {
     switch (defaultTargetPlatform) {
       case TargetPlatform.iOS:
-        return 'ca-app-pub-3940256099942544/2934735716';
+        return 'ca-app-pub-8032958007283500/8122575746';
       default:
         return 'ca-app-pub-3940256099942544/6300978111';
     }
@@ -174,7 +176,7 @@ class _HomeScreenState extends State<HomeScreen>
   String get _interstitialAdUnitId {
     switch (defaultTargetPlatform) {
       case TargetPlatform.iOS:
-        return 'ca-app-pub-3940256099942544/4411468910';
+        return 'ca-app-pub-8032958007283500/1020991094';
       default:
         return 'ca-app-pub-3940256099942544/1033173712';
     }
@@ -198,6 +200,11 @@ class _HomeScreenState extends State<HomeScreen>
       duration: const Duration(seconds: 1),
     )..addListener(_tickPhysics);
     _gameLoopController.repeat();
+
+    _energyBlinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
 
     // 1. Tilt Gravity from accelerometer
     _accelerometerSub = accelerometerEventStream().listen(
@@ -248,12 +255,30 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _onStateChange() {
+    _audioController.isMuted = _state.isAudioMuted;
+
+    if (_state.energy <= 20.0) {
+      if (!_energyBlinkController.isAnimating) {
+        _energyBlinkController.repeat(reverse: true);
+      }
+    } else {
+      if (_energyBlinkController.isAnimating) {
+        _energyBlinkController.stop();
+        _energyBlinkController.value = 1.0;
+      }
+    }
+
     if (!_hasInitializedLevelTracking) {
       _lastKnownLevel = _state.level;
       _hasInitializedLevelTracking = true;
     } else if (_state.level > _lastKnownLevel) {
       _triggerLevelUpFeedback();
       _lastKnownLevel = _state.level;
+      if (_state.level >= 10 && !_state.hasShownReviewDialog) {
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (mounted) _checkAndShowReviewDialog();
+        });
+      }
     } else {
       _lastKnownLevel = _state.level;
     }
@@ -285,6 +310,7 @@ class _HomeScreenState extends State<HomeScreen>
     required String description,
     required dynamic controller,
     bool isLast = false,
+    String? importantWarningText,
   }) {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -296,7 +322,7 @@ class _HomeScreenState extends State<HomeScreen>
           BoxShadow(
             color: Colors.black.withOpacity(0.5),
             blurRadius: 10,
-          )
+          ),
         ],
       ),
       child: Column(
@@ -320,6 +346,18 @@ class _HomeScreenState extends State<HomeScreen>
               height: 1.5,
             ),
           ),
+          if (importantWarningText != null) ...[
+            const SizedBox(height: 16),
+            Text(
+              importantWarningText,
+              style: GoogleFonts.notoSansJp(
+                color: const Color(0xFFFF2A6D),
+                fontSize: 15.0,
+                fontWeight: FontWeight.bold,
+                height: 1.5,
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           SizedBox(
             width: double.infinity,
@@ -453,6 +491,7 @@ class _HomeScreenState extends State<HomeScreen>
                 description: "わからないことがあれば、この説明ヘルプで確認してね！\nそれでは、PUNIとの生活を楽しんでください！さあ、育ててみましょう！",
                 controller: controller,
                 isLast: true,
+                importantWarningText: "※PUNIについて重要な特徴が書いてあるので、必ず確認してください",
               );
             },
           ),
@@ -469,6 +508,7 @@ class _HomeScreenState extends State<HomeScreen>
       opacityShadow: 0.90, // しっかり暗くする
       onFinish: () {
         _state.completeTutorial();
+        _checkAndShowReviewDialog();
       },
       onClickTarget: (target) {
         // 明示的なボタン進行のみにするため、ここでの進行は無効化
@@ -478,10 +518,142 @@ class _HomeScreenState extends State<HomeScreen>
       },
       onSkip: () {
         _state.completeTutorial();
+        _checkAndShowReviewDialog();
         return true;
       },
     );
     tutorialCoachMark.show(context: context);
+  }
+
+  void _checkAndShowReviewDialog() {
+    if (!mounted) return;
+    if (_state.level >= 10 && !_state.hasShownReviewDialog) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _state.level >= 10 && !_state.hasShownReviewDialog) {
+          _showReviewDialog();
+        }
+      });
+    }
+  }
+
+  void _showReviewDialog() {
+    if (!mounted) return;
+
+    // 1プレイヤーに対して確実に1回のみ表示するため、ダイアログ表示時にフラグを即時確定・保存
+    _state.markReviewDialogShown();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          contentPadding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 68,
+                height: 68,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFFFFD700), Color(0xFFFF9500)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFFFD700).withOpacity(0.35),
+                      blurRadius: 16,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.star_rounded,
+                  color: Colors.white,
+                  size: 44,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'PUNIを楽しんで\nいただけていますか？',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.notoSansJp(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  height: 1.3,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'PUNIが【レベル${_state.level}】に到達しました！🎉\n\nいつもたくさん遊んでくれてありがとうございます。\nもしよろしければ、ストアでの評価や応援レビューでご感想を聞かせていただけませんか？',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.notoSansJp(
+                  color: Colors.white.withOpacity(0.85),
+                  fontSize: 13,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF9F0A),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    elevation: 4,
+                  ),
+                  icon: const Icon(Icons.rate_review_rounded, size: 20),
+                  label: Text(
+                    'レビューを書く',
+                    style: GoogleFonts.notoSansJp(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  onPressed: () async {
+                    Navigator.of(dialogContext).pop();
+                    _state.markReviewDialogShown();
+                    try {
+                      final InAppReview inAppReview = InAppReview.instance;
+                      if (await inAppReview.isAvailable()) {
+                        await inAppReview.requestReview();
+                      } else {
+                        await inAppReview.openStoreListing();
+                      }
+                    } catch (e) {
+                      debugPrint('InAppReview error: $e');
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop();
+                  _state.markReviewDialogShown();
+                },
+                child: Text(
+                  'あとで',
+                  style: GoogleFonts.notoSansJp(
+                    color: Colors.white54,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _showBadgeUnlockedPopup(TitleBadge badge) {
@@ -819,7 +991,7 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
-    if (_activePointers.length >= 2 && _state.intimacy >= 100.0) {
+    if (_activePointers.length >= 2) {
       _holdTimer?.cancel();
       _holdTimer = null;
       _holdStartPos = null;
@@ -1091,17 +1263,7 @@ class _HomeScreenState extends State<HomeScreen>
             _audioController.playFlingVoice(hasEnergy: _state.energy >= 2.0);
             didPlayFling = true;
 
-            bool canReward = true;
-            if (_lastFlingRewardTime != null) {
-              final diff = DateTime.now().difference(_lastFlingRewardTime!);
-              if (diff.inSeconds < 2) {
-                canReward = false;
-              }
-            }
-
-            if (canReward) {
-              _lastFlingRewardTime = DateTime.now();
-              bool hadEnergy = _state.energy >= 2.0;
+            bool hadEnergy = _state.energy >= 2.0;
 
               double targetIntimacy = (flingSpeed < 1700.0)
                   ? 0.5
@@ -1127,10 +1289,6 @@ class _HomeScreenState extends State<HomeScreen>
                 );
                 _maybeDropCoin(_physics.center);
               }
-            } else {
-              // クールダウン中は投げるカウントだけ加算し、報酬やエネルギー消費は行わない
-              _state.addThrowCount();
-            }
           }
         }
       }
@@ -2783,30 +2941,61 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // Watch interstitial ad to Level Up
-  void _watchAdToLevelUp() {
-    if (_isShowingInterstitialAd || _isInterstitialAdLoading) return;
+  Future<void> _watchAdToLevelUp() async {
+    if (_isShowingInterstitialAd) return;
 
-    final ad = _interstitialAd;
-    if (ad == null) return;
+    // 即座にフラグを立てて、後続の連打タップを完全にブロック
+    setState(() {
+      _isShowingInterstitialAd = true;
+    });
 
-    final consumed = _state.consumeAdLevelUpAction();
-    if (!consumed) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '動画でコインGETは1日${CreatureState.maxAdLevelUpPerDay}回までです。',
-            style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+    final canWatch = _state.canAdLevelUp();
+    if (!canWatch) {
+      if (mounted) {
+        setState(() {
+          _isShowingInterstitialAd = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '動画でコインGETは1日${CreatureState.maxAdLevelUpPerDay}回までです。',
+              style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: CupertinoColors.systemRed,
+            behavior: SnackBarBehavior.floating,
           ),
-          backgroundColor: CupertinoColors.systemRed,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+        );
+      }
       return;
     }
 
+    final ad = _interstitialAd;
+    if (ad == null || _isInterstitialAdLoading) {
+      if (mounted) {
+        setState(() {
+          _isShowingInterstitialAd = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '現在、広告を準備中です。少し待ってから再度お試しください。',
+              style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold),
+            ),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      
+      _loadInterstitialAd(); // 次回のためにロードを試みる
+      return;
+    }
+
+    // 広告が準備できている場合のみカウントを消費する
+    _state.consumeAdLevelUpAction();
+
     setState(() {
-      _isShowingInterstitialAd = true;
       _interstitialAd = null;
     });
 
@@ -3088,15 +3277,15 @@ class _HomeScreenState extends State<HomeScreen>
                                 _buildPlayRow(
                                   'なでる',
                                   'PUNIをなぞると気持ちよさそうにします。じっくり（0.8秒以上）優しくなでてあげると、しっかり喜んで親密度が上がります。',
-                                  '初期解放',
+                                  '解放済',
                                   true,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
                                 _buildPlayRow(
                                   '投げる',
-                                  'スワイプして投げると弾んで喜びます。一度大きく遊んだあとは、PUNIにも少し休憩（2秒間）が必要です。連続でポイポイ投げすぎると疲れてしまい、親密度が上がりません。',
-                                  '初期解放',
+                                  'スワイプして投げると弾んで喜びます。連続でたくさん投げて遊んであげましょう！',
+                                  '解放済',
                                   true,
                                   textThemeColor,
                                 ),
@@ -3104,8 +3293,8 @@ class _HomeScreenState extends State<HomeScreen>
                                 _buildPlayRow(
                                   '二本指つまみ',
                                   '2本指でつまんで引っ張り、離すと喜びます。',
-                                  '親密度 100ptで解放', // ★ 40% ➔ 100%
-                                  _state.intimacy >= 100.0,
+                                  '解放済',
+                                  true,
                                   textThemeColor,
                                 ),
                                 const Divider(height: 12),
@@ -3122,6 +3311,14 @@ class _HomeScreenState extends State<HomeScreen>
                                   '空き地を1秒間長押しすると指へ這い寄ります。',
                                   '親密度 200ptで解放', // ★ 80% ➔ 200%
                                   _state.intimacy >= 200.0,
+                                  textThemeColor,
+                                ),
+                                const Divider(height: 12),
+                                _buildPlayRow(
+                                  '音声のON/OFF',
+                                  '画面右上の「データ引継」ボタンの右にあるスピーカーアイコン（🔊）をタップすると、PUNIの鳴き声などの音声をミュートできます。',
+                                  '解放済',
+                                  true,
                                   textThemeColor,
                                 ),
                               ],
@@ -3228,6 +3425,17 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
                   const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      'Ver 1.0.4',
+                      style: GoogleFonts.notoSansJp(
+                        fontSize: 10,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black,
@@ -3661,7 +3869,20 @@ class _HomeScreenState extends State<HomeScreen>
     final stepsResult = await _fetchTodayHealthSteps();
     if (stepsResult.isSuccess) {
       final stepsTotal = stepsResult.value!;
-      final gained = _state.syncTodaySteps(stepsTotal);
+      
+      int gained = 0;
+      final lastSyncTime = _state.lastStepSyncTime;
+      final now = DateTime.now();
+
+      if (lastSyncTime == null || lastSyncTime.day != now.day) {
+        gained = max(0, stepsTotal - _state.stepsToday);
+      } else {
+        final stepsSinceLastSync =
+            await _health.getTotalStepsInInterval(lastSyncTime, now) ?? 0;
+        gained = max(0, stepsSinceLastSync);
+      }
+
+      _state.syncHealthSteps(stepsTotal, gained);
       debugPrint('Steps synced: $stepsTotal total, +$gained new steps');
     } else if (stepsResult.errorMessage != null) {
       failures.add('歩数: ${stepsResult.errorMessage!}');
@@ -3700,6 +3921,9 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     _checkAndShowTutorial(); // 許可ダイアログ等の処理が完了した後にチュートリアルを開始
+    if (_state.hasCompletedTutorial) {
+      _checkAndShowReviewDialog();
+    }
   }
 
   LinearGradient _getBackgroundGradient() {
@@ -3753,7 +3977,6 @@ class _HomeScreenState extends State<HomeScreen>
   String? _getNextIntimacyEventText() {
     final intimacy = _state.intimacy;
     if (intimacy < 50 && intimacy >= 45) return 'もう少しで【色ロック】解放…！';
-    if (intimacy < 100 && intimacy >= 95) return 'もう少しで【二本指つまみ】を覚えそう…！';
     if (intimacy < 150 && intimacy >= 145) return 'もう少しで【長押し巨大化】を覚えそう…！';
     if (intimacy < 200 && intimacy >= 195) return 'もう少しで【タップ追従】を覚えそう…！';
     if (intimacy < 250 && intimacy >= 245) return 'もう少しで【色無くナール】が入荷しそう…！';
@@ -3981,21 +4204,29 @@ class _HomeScreenState extends State<HomeScreen>
             child: ClipRRect(
               key: _energyKey,
               borderRadius: BorderRadius.circular(24),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: textThemeColor == Colors.white
-                      ? Colors.white.withOpacity(0.08)
-                      : Colors.white.withOpacity(0.4),
-                  border: Border.all(
-                    color: textThemeColor == Colors.white
-                        ? Colors.white.withOpacity(0.12)
-                        : Colors.white.withOpacity(0.25),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: media.size.width - 40,
+                    maxWidth: media.size.width - 40,
                   ),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 16,
-                ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: textThemeColor == Colors.white
+                          ? Colors.white.withOpacity(0.08)
+                          : Colors.white.withOpacity(0.4),
+                      border: Border.all(
+                        color: textThemeColor == Colors.white
+                            ? Colors.white.withOpacity(0.12)
+                            : Colors.white.withOpacity(0.25),
+                      ),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 16,
+                    ),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -4151,6 +4382,7 @@ class _HomeScreenState extends State<HomeScreen>
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
+
                             Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 8,
@@ -4292,51 +4524,73 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.bolt,
-                          color: Color(0xFF27AE60),
-                          size: 16,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          "ぷにエネルギー: ${_state.energy.toStringAsFixed(1)} / 100",
-                          style: GoogleFonts.notoSansJp(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: textThemeColor,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Stack(
+                    AnimatedBuilder(
+                      animation: _energyBlinkController,
+                      builder: (context, child) {
+                        return Opacity(
+                          opacity: _state.energy <= 20.0
+                              ? 0.3 + 0.7 * _energyBlinkController.value
+                              : 1.0,
+                          child: child,
+                        );
+                      },
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            height: 8,
-                            color: textThemeColor == Colors.white
-                                ? Colors.white.withOpacity(0.15)
-                                : Colors.black.withOpacity(0.05),
-                          ),
-                          AnimatedFractionallySizedBox(
-                            duration: const Duration(milliseconds: 250),
-                            widthFactor: (_state.energy / 100.0).clamp(
-                              0.0,
-                              1.0,
-                            ),
-                            child: Container(
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Color(0xFF27AE60),
-                                    Color(0xFF11998E),
-                                  ],
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.bolt,
+                                color: _state.energy <= 20.0
+                                    ? Colors.redAccent
+                                    : const Color(0xFF27AE60),
+                                size: 16,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                "ぷにエネルギー: ${_state.energy.toStringAsFixed(1)} / 100",
+                                style: GoogleFonts.notoSansJp(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: _state.energy <= 20.0
+                                      ? Colors.redAccent
+                                      : textThemeColor,
                                 ),
                               ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Stack(
+                              children: [
+                                Container(
+                                  height: 8,
+                                  color: textThemeColor == Colors.white
+                                      ? Colors.white.withOpacity(0.15)
+                                      : Colors.black.withOpacity(0.05),
+                                ),
+                                AnimatedFractionallySizedBox(
+                                  duration: const Duration(milliseconds: 250),
+                                  widthFactor: (_state.energy / 100.0).clamp(
+                                    0.0,
+                                    1.0,
+                                  ),
+                                  child: Container(
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: _state.energy <= 20.0
+                                            ? [Colors.redAccent, Colors.orangeAccent]
+                                            : const [
+                                                Color(0xFF27AE60),
+                                                Color(0xFF11998E),
+                                              ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
@@ -4442,23 +4696,64 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                               ],
                             ),
-                            InkWell(
-                              onTap: _showTransferMenu,
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: textThemeColor.withOpacity(0.1),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                InkWell(
+                                  onTap: _showTransferMenu,
                                   borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: textThemeColor.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.cloud_sync, size: 14, color: textThemeColor.withOpacity(0.9)),
+                                        const SizedBox(width: 4),
+                                        Text("データ引継", style: GoogleFonts.notoSansJp(fontSize: 10, fontWeight: FontWeight.bold, color: textThemeColor.withOpacity(0.9))),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                                child: Row(
-                                  children: [
-                                    Icon(Icons.cloud_sync, size: 14, color: textThemeColor.withOpacity(0.9)),
-                                    const SizedBox(width: 4),
-                                    Text("データ引継", style: GoogleFonts.notoSansJp(fontSize: 10, fontWeight: FontWeight.bold, color: textThemeColor.withOpacity(0.9))),
-                                  ],
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () {
+                                    _state.toggleAudioMuted();
+                                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          _state.isAudioMuted ? '音声をOFFにしました' : '音声をONにしました',
+                                          style: GoogleFonts.notoSansJp(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        backgroundColor: Colors.black87,
+                                        behavior: SnackBarBehavior.floating,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: textThemeColor.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Icon(
+                                      _state.isAudioMuted
+                                          ? Icons.volume_off_rounded
+                                          : Icons.volume_up_rounded,
+                                      color: textThemeColor.withOpacity(0.9),
+                                      size: 16,
+                                    ),
+                                  ),
                                 ),
-                              ),
+                              ],
                             ),
                           ],
                         ),
@@ -4469,6 +4764,8 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
+        ),
+      ),
 
           // 6. Bottom Panels（画面下のボタン・広告エリア）
           Positioned(
@@ -4480,21 +4777,25 @@ class _HomeScreenState extends State<HomeScreen>
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(24),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: textThemeColor == Colors.white
-                          ? Colors.white.withOpacity(0.08)
-                          : Colors.white.withOpacity(0.4),
-                      border: Border.all(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.bottomCenter,
+                    child: Container(
+                      width: max(350.0, media.size.width - 40.0),
+                      decoration: BoxDecoration(
                         color: textThemeColor == Colors.white
-                            ? Colors.white.withOpacity(0.12)
-                            : Colors.white.withOpacity(0.25),
+                            ? Colors.white.withOpacity(0.08)
+                            : Colors.white.withOpacity(0.4),
+                        border: Border.all(
+                          color: textThemeColor == Colors.white
+                              ? Colors.white.withOpacity(0.12)
+                              : Colors.white.withOpacity(0.25),
+                        ),
                       ),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
@@ -4528,19 +4829,11 @@ class _HomeScreenState extends State<HomeScreen>
                         _buildActionButton(
                           icon: Icons.play_circle_filled,
                           label: "動画でコインGET",
-                          subtitle: _state.adLevelUpRemainingToday <= 0
-                              ? '残り 0/${CreatureState.maxAdLevelUpPerDay}'
-                              : (_isInterstitialAdLoading
-                                    ? '読み込み中...'
-                                    : (_interstitialAd == null
-                                          ? '準備中...'
-                                          : '残り ${_state.adLevelUpRemainingToday}/${CreatureState.maxAdLevelUpPerDay}')),
+                          subtitle: '残り ${_state.adLevelUpRemainingToday}/${CreatureState.maxAdLevelUpPerDay}',
                           isActive: true,
                           isEnabled:
                               _state.adLevelUpRemainingToday > 0 &&
-                              _interstitialAd != null &&
-                              !_isShowingInterstitialAd &&
-                              !_isInterstitialAdLoading,
+                              !_isShowingInterstitialAd,
                           textThemeColor: textThemeColor,
                           onPressed: _watchAdToLevelUp,
                         ),
@@ -4554,6 +4847,7 @@ class _HomeScreenState extends State<HomeScreen>
                           onPressed: _showEnergyRecoveryGuideDialog,
                         ),
                       ],
+                    ),
                     ),
                   ),
                 ),
@@ -4775,6 +5069,7 @@ class _HomeScreenState extends State<HomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _gameLoopController.dispose();
+    _energyBlinkController.dispose();
     _accelerometerSub?.cancel();
     _batterySub?.cancel();
     _bannerAd?.dispose();
